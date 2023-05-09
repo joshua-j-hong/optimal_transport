@@ -1,7 +1,7 @@
 #!/bin/sh
 
 
-WorkLOC=/home/hong #yours
+WorkLOC=/home/hong/optimal_transport #yours
 
 
 
@@ -22,7 +22,7 @@ Eval_gold_file=$WorkLOC/AccAlign/ALIGN6/dev_data/dev.talp
 #EVAL_FILE_TGT=$WorkLOC/xxx/dev.tgt
 #Eval_gold_file=$WorkLOC/xxx/dev.talp
 
-OUTPUT_DIR_ADAPTER=$WorkLOC/AccAlign/infer_output
+OUTPUT_DIR_ADAPTER=$WorkLOC/accalign-models/self-supervised
 Model=sentence-transformers/LaBSE
 
 #OUTPUT_DIR_ADAPTER=$WorkLOC/adapter_output

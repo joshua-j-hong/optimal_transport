@@ -1,7 +1,7 @@
 #!/bin/sh
 
 
-export WorkLOC=/home/hong 
+export WorkLOC=/home/hong/optimal_transport
 #yours
 
 SRC=$WorkLOC/data/pre_processed_data/accAlign/DeEn/de

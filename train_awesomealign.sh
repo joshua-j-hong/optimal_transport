@@ -1,9 +1,11 @@
-TRAIN_FILE=/home/hong/data/pre_processed_data/awesomeAlign/ALIGN6/train_data/train.src-tgt
-TRAIN_GOLD_FILE=/home/hong/data/pre_processed_data/awesomeAlign/ALIGN6/train_data/train.gold
-EVAL_FILE=/home/hong/data/pre_processed_data/awesomeAlign/ALIGN6/dev_data/dev.src-tgt
-EVAL_GOLD_FILE=/home/hong/data/pre_processed_data/awesomeAlign/ALIGN6/dev_data/dev.gold
+WorkLOC=/home/hong/optimal_transport
+
+TRAIN_FILE=$WorkLOC/data/pre_processed_data/awesomeAlign/ALIGN6/train_data/train.src-tgt
+TRAIN_GOLD_FILE=$WorkLOC/data/pre_processed_data/awesomeAlign/ALIGN6/train_data/train.gold
+EVAL_FILE=$WorkLOC/data/pre_processed_data/awesomeAlign/ALIGN6/dev_data/dev.src-tgt
+EVAL_GOLD_FILE=$WorkLOC/data/pre_processed_data/awesomeAlign/ALIGN6/dev_data/dev.gold
 #OUTPUT_DIR=/home/hong/awesome-align-models/supervised
-OUTPUT_DIR=/home/hong/awesome-align-models/self-supervised
+OUTPUT_DIR=$WorkLOC/awesome-align-models/self-supervised
 
 #Supervised
 # CUDA_VISIBLE_DEVICES=0 awesome-train \

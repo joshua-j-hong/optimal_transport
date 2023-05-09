@@ -1,4 +1,4 @@
-export WORKLOC=/home/hong
+export WORKLOC=/home/hong/optimal_transport
 DATA_FILE=$WORKLOC/data/pre_processed_data/awesomeAlign/EnFr/enfr.src-tgt
 ref_align=$WORKLOC/data/pre_processed_data/awesomeAlign/EnFr/enfr.gold
 reftype='--oneRef'
