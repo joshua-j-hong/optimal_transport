@@ -1,0 +1,16 @@
+gensim
+tqdm
+transformers
+cupy-cuda102
+cython
+POT
+nltk
+tensorboard
+torch
+torch_optimizer
+adapter-transformers
+numpy
+boto3
+filelock
+requests
+tokenizers
