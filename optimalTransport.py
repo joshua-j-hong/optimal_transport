@@ -14,13 +14,22 @@ datasets = ["DeEnGoldAlignment",
 ALIGN6 = True
 
 def main():
-    shutil.rmtree(f'./data/pre_processed_data/accAlign')
-    shutil.rmtree(f'./data/pre_processed_data/awesomeAlign')
-    shutil.rmtree(f'./data/datasets')
+    if os.path.exists(f'./data/pre_processed_data/accAlign'):
+        shutil.rmtree(f'./data/pre_processed_data/accAlign')
+    
+    if os.path.exists(f'./data/pre_processed_data/awesomeAlign'):
+        shutil.rmtree(f'./data/pre_processed_data/awesomeAlign')
+    
+    if os.path.exists(f'./data/datasets'):
+        shutil.rmtree(f'./data/datasets')  
 
     os.mkdir(f'./data/pre_processed_data/accAlign')
     os.mkdir(f'./data/pre_processed_data/awesomeAlign')
     os.mkdir(f'./data/datasets')
+
+    open(f'./data/pre_processed_data/accAlign/.gitkeep', 'a').close()
+    open(f'./data/pre_processed_data/awesomeAlign/.gitkeep', 'a').close()
+    open(f'./data/datasets/.gitkeep', 'a').close()
 
     # First extract all tar files
     for dataset in datasets:

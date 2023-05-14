@@ -11,8 +11,8 @@ TGT=$WorkLOC/data/pre_processed_data/accAlign/DeEn/en
 #TGT=$WorkLOC/xxx/roen/roen.tgt
 
 OUTPUT_DIR=$WorkLOC/AccAlign/infer_output
-#ADAPTER=$WorkLOC/AccAlign/checkpoint-adapter
-ADAPTER=$WorkLOC/accalign-models/supervised/checkpoint-1200/
+ADAPTER=$WorkLOC/AccAlign/checkpoint-adapter
+#ADAPTER=$WorkLOC/accalign-models/supervised/checkpoint-1200/
 Model=sentence-transformers/LaBSE
 
 #OUTPUT_DIR=$WorkLOC/xxx/infer_output
