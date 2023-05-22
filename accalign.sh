@@ -4,8 +4,13 @@
 export WorkLOC=/home/hong/optimal_transport
 #yours
 
-SRC=$WorkLOC/data/pre_processed_data/accAlign/DeEn/de
-TGT=$WorkLOC/data/pre_processed_data/accAlign/DeEn/en
+DATASET=DeEn
+SOURCE=de
+TARGET=en
+EXTRACTION=unbalancedOT
+
+SRC=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/$SOURCE
+TGT=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/$TARGET
 
 #SRC=$WorkLOC/xxx/roen/roen.src
 #TGT=$WorkLOC/xxx/roen/roen.tgt
@@ -35,7 +40,7 @@ python $WorkLOC/AccAlign/train_alignment_adapter.py \
    --infer_path $OUTPUT_DIR \
    --adapter_path $ADAPTER \
    --model_name_or_path $Model \
-   --extraction 'softmax' \
+   --extraction $EXTRACTION \
    --infer_data_file_src $SRC \
    --infer_data_file_tgt $TGT \
    --per_gpu_train_batch_size 40 \
@@ -44,8 +49,8 @@ python $WorkLOC/AccAlign/train_alignment_adapter.py \
    --softmax_threshold 0.1 \
    --do_test \
 
-datadir=$WorkLOC/data/pre_processed_data/accAlign/DeEn/
-ref_align=$datadir/alignmentDeEn.talp
+datadir=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/
+ref_align=$datadir/alignment$DATASET.talp
 reftype='--oneRef'
 
 

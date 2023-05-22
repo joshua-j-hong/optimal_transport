@@ -544,7 +544,7 @@ def main():
     parser.add_argument("--cache_data", action="store_true", help='if cache the dataset')
     parser.add_argument("--align_layer", type=int, default=6, help="layer for alignment extraction")
     parser.add_argument(
-        "--extraction", default='softmax', type=str, choices=['softmax', 'entmax'], help='softmax or entmax'
+        "--extraction", default='softmax', type=str, choices=['softmax', 'balancedOT', 'unbalancedOT', 'partialOT'], help='softmax, balancedOT, unbalancedOT, or partialOT'
     )
     parser.add_argument(
         "--softmax_threshold", type=float, default=0.1

@@ -11,7 +11,17 @@ from transformers import BertModel, BertTokenizer, XLMModel, XLMTokenizer, Rober
 import torch.nn as nn
 from train_utils import get_logger
 
+import ot
+from torchmetrics.functional import pairwise_cosine_similarity
+
 LOG = get_logger(__name__)
+
+def nxn_cos_sim(A, B, dim=-1, eps=1e-8):
+    numerator = torch.bmm(A, torch.permute(B, (0, 2, 1))) 
+    A_l2 = torch.mul(A, A).sum(axis=dim)
+    B_l2 = torch.mul(B, B).sum(axis=dim)
+    denominator = torch.max(torch.sqrt(torch.bmm(A_l2.unsqueeze(-1), B_l2.unsqueeze(1))), torch.tensor(eps))   
+    return torch.div(numerator, denominator)
 
 
 def return_extended_attention_mask(attention_mask, dtype):
@@ -58,6 +68,11 @@ class SentenceAligner_word(object):
             # mask
             attention_mask_src = ((inputs_src == PAD_ID) + (inputs_src == CLS_ID) + (inputs_src == SEP_ID)).float()
             attention_mask_tgt = ((inputs_tgt == PAD_ID) + (inputs_tgt == CLS_ID) + (inputs_tgt == SEP_ID)).float()
+
+            mask_src = 1 - attention_mask_src
+            mask_tgt = 1 - attention_mask_tgt
+
+
             len_src = torch.sum(1 - attention_mask_src, -1)
             len_tgt = torch.sum(1 - attention_mask_tgt, -1)
             attention_mask_src = return_extended_attention_mask(1 - attention_mask_src, hidden_states_src.dtype)
@@ -71,31 +86,75 @@ class SentenceAligner_word(object):
             value_src = query_src
             value_tgt = query_tgt
 
-            # att
-            attention_scores = torch.matmul(query_src, key_tgt.transpose(-1, -2))
-            attention_scores_src = attention_scores + attention_mask_tgt
-            attention_scores_tgt = attention_scores + attention_mask_src.transpose(-1, -2)
+            if args.extraction in ["balancedOT", "unbalancedOT", "partialOT"]:
+                # Iterate through embeddings
+                output = torch.full((query_src.size()[0], 1, query_src.size()[2], key_tgt.size()[2]), 0.0)
+                for i, (source, target, source_mask, target_mask) in enumerate(zip(query_src, key_tgt, mask_src, mask_tgt)):
 
-            attention_probs_src = nn.Softmax(dim=-1)(
-                attention_scores_src)  # if extraction == 'softmax' else entmax15(attention_scores_src, dim=-1)
-            attention_probs_tgt = nn.Softmax(dim=-2)(
-                attention_scores_tgt)  # if extraction == 'softmax' else entmax15(attention_scores_tgt, dim=-2)
+                    # Extract non-masked tokens
+                    nomask_source = source[0][source_mask.nonzero()].squeeze(1)
+                    nomask_target = target[0][target_mask.nonzero()].squeeze(1)
+                
+                    # Calculate cosine distance and normalize
+                    cosine_distance = 1 - pairwise_cosine_similarity(nomask_source, nomask_target)
+                    #cosine_sim = torch.nan_to_num(cosine_sim)
+                    size = cosine_distance.size()
+                    cosine_distance -= cosine_distance.min()
+                    cosine_distance /= cosine_distance.max()
 
-            if self.guide is None:
-                # threshold = softmax_threshold if extraction == 'softmax' else 0
-                threshold = self.softmax_threshold
-                align_matrix = (attention_probs_src > threshold) * (attention_probs_tgt > threshold)
+                    # Create initial distributions
+                    source_distribution = torch.full((size[0],1), 1.0 / size[0]).squeeze(1)
+                    target_distribution = torch.full((size[1],1), 1.0 / size[1]).squeeze(1)
 
-                if not output_prob:
-                    # return align_matrix
-                    align_matrix_all_layers[layer_id] = align_matrix
-                # A heuristic of generating the alignment probability
-                """
-                attention_probs_src = nn.Softmax(dim=-1)(attention_scores_src/torch.sqrt(len_tgt.view(-1, 1, 1, 1)))
-                attention_probs_tgt = nn.Softmax(dim=-2)(attention_scores_tgt/torch.sqrt(len_src.view(-1, 1, 1, 1)))
-                align_prob = (2*attention_probs_src*attention_probs_tgt)/(attention_probs_src+attention_probs_tgt+1e-9)
-                return align_matrix, align_prob
-                """
+                    reg = 0.1
+                    reg_m = 0.1
+                    if args.extraction == "balancedOT":
+                        transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, cosine_distance, reg, numItermax = 250)
+                    elif args.extraction == "unbalancedOT":
+                        transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, cosine_distance, reg, reg_m)
+                    elif args.extraction == "partialOT":
+                        transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, cosine_distance, reg)
+
+                    output[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+
+                if self.guide is None:
+                    if args.extraction == "balancedOT":
+                        align_matrix = output > 0.005
+                    elif args.extraction == "unbalancedOT":
+                        align_matrix = output > 0.01
+                    elif args.extraction == "partialOT":
+                        align_matrix = output > 0.01
+
+                    if not output_prob:
+                        # return align_matrix
+                        align_matrix_all_layers[layer_id] = align_matrix
+                    # A heuristic of generating the alignment probability
+            elif args.extraction == 'softmax':                
+                # att
+                attention_scores = torch.matmul(query_src, key_tgt.transpose(-1, -2))
+                attention_scores_src = attention_scores + attention_mask_tgt
+                attention_scores_tgt = attention_scores + attention_mask_src.transpose(-1, -2)
+
+                attention_probs_src = nn.Softmax(dim=-1)(
+                    attention_scores_src)  # if extraction == 'softmax' else entmax15(attention_scores_src, dim=-1)
+                attention_probs_tgt = nn.Softmax(dim=-2)(
+                    attention_scores_tgt)  # if extraction == 'softmax' else entmax15(attention_scores_tgt, dim=-2)
+
+                if self.guide is None:
+                    # threshold = softmax_threshold if extraction == 'softmax' else 0
+                    threshold = self.softmax_threshold
+                    
+                    align_matrix = (attention_probs_src > threshold) * (attention_probs_tgt > threshold)
+                    if not output_prob:
+                        # return align_matrix
+                        align_matrix_all_layers[layer_id] = align_matrix
+                    # A heuristic of generating the alignment probability
+                    """
+                    attention_probs_src = nn.Softmax(dim=-1)(attention_scores_src/torch.sqrt(len_tgt.view(-1, 1, 1, 1)))
+                    attention_probs_tgt = nn.Softmax(dim=-2)(attention_scores_tgt/torch.sqrt(len_src.view(-1, 1, 1, 1)))
+                    align_prob = (2*attention_probs_src*attention_probs_tgt)/(attention_probs_src+attention_probs_tgt+1e-9)
+                    return align_matrix, align_prob
+                    """
 
         return align_matrix_all_layers
 

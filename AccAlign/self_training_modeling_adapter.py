@@ -58,10 +58,17 @@ class ModelGuideHead(nn.Module):
         value_src = query_src
         value_tgt = query_tgt
 
+        print(query_src.size())
+        print(key_tgt.size())
+
         #att
         attention_scores = torch.matmul(query_src, key_tgt.transpose(-1, -2))
         attention_scores_src = attention_scores + attention_mask_tgt
         attention_scores_tgt = attention_scores + attention_mask_src.transpose(-1, -2)
+
+        print("Attention")
+        print(attention_scores_src.size())
+        print(attention_scores_tgt.size())
 
 
         attention_probs_src = nn.Softmax(dim=-1)(attention_scores_src) #if extraction == 'softmax' else entmax15(attention_scores_src, dim=-1)
