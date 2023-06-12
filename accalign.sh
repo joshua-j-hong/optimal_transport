@@ -4,10 +4,20 @@
 export WorkLOC=/home/hong/optimal_transport
 #yours
 
-DATASET=DeEn
-SOURCE=de
-TARGET=en
+DATASET=ALIGN6/dev_data
+SOURCE=dev.src
+TARGET=dev.tgt
+
+# DATASET=JaEn
+# SOURCE=ja
+# TARGET=en
+
 EXTRACTION=unbalancedOT
+ALIGNMENT_THRESHOLD=0.25
+ENTROPY_REGULARIZATION=0.1
+MARGINAL_REGULARIZATION=0.3
+FERTILITY_DISTRIBUTION=uniform
+COST_FUNCTION=euclidean_distance
 
 SRC=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/$SOURCE
 TGT=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/$TARGET
@@ -17,7 +27,7 @@ TGT=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/$TARGET
 
 OUTPUT_DIR=$WorkLOC/AccAlign/infer_output
 ADAPTER=$WorkLOC/AccAlign/checkpoint-adapter
-#ADAPTER=$WorkLOC/accalign-models/supervised/checkpoint-1200/
+ADAPTER=$WorkLOC/accalign-models/uot_uniform_euclid/checkpoint-1200/
 Model=sentence-transformers/LaBSE
 
 #OUTPUT_DIR=$WorkLOC/xxx/infer_output
@@ -25,16 +35,20 @@ Model=sentence-transformers/LaBSE
 #Model=$WorkLOC/xxx/LaBSE
 
 # python $WorkLOC/AccAlign/train_alignment_adapter.py \
-#     --infer_path $OUTPUT_DIR \
-#     --model_name_or_path $Model \
-#     --extraction 'softmax' \
-#     --infer_data_file_src $SRC \
-#     --infer_data_file_tgt $TGT \
-#     --per_gpu_train_batch_size 40 \
-#     --gradient_accumulation_steps 1 \
-#     --align_layer 6 \
-#     --softmax_threshold 0.1 \
-#     --do_test \
+#    --infer_path $OUTPUT_DIR \
+#    --model_name_or_path $Model \
+#    --extraction $EXTRACTION \
+#    --infer_data_file_src $SRC \
+#    --infer_data_file_tgt $TGT \
+#    --per_gpu_train_batch_size 40 \
+#    --gradient_accumulation_steps 1 \
+#    --align_layer 6 \
+#    --alignment_threshold $ALIGNMENT_THRESHOLD \
+#    --entropy_regularization $ENTROPY_REGULARIZATION \
+#    --marginal_regularization $MARGINAL_REGULARIZATION \
+#    --fertility_distribution $FERTILITY_DISTRIBUTION \
+#    --cost_function $COST_FUNCTION \
+#    --do_test \
 
 python $WorkLOC/AccAlign/train_alignment_adapter.py \
    --infer_path $OUTPUT_DIR \
@@ -46,11 +60,16 @@ python $WorkLOC/AccAlign/train_alignment_adapter.py \
    --per_gpu_train_batch_size 40 \
    --gradient_accumulation_steps 1 \
    --align_layer 6 \
-   --softmax_threshold 0.1 \
+   --alignment_threshold $ALIGNMENT_THRESHOLD \
+   --entropy_regularization $ENTROPY_REGULARIZATION \
+   --marginal_regularization $MARGINAL_REGULARIZATION \
+   --fertility_distribution $FERTILITY_DISTRIBUTION \
+   --cost_function $COST_FUNCTION \
    --do_test \
 
 datadir=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/
 ref_align=$datadir/alignment$DATASET.talp
+ref_align=$datadir/dev.talp
 reftype='--oneRef'
 
 

@@ -6,6 +6,9 @@ import torch
 import numpy as np
 from transformers import PreTrainedModel
 
+import ot
+from torchmetrics.functional import pairwise_cosine_similarity, pairwise_euclidean_distance
+
 
 PAD_ID=0
 CLS_ID=101
@@ -28,6 +31,8 @@ def return_extended_attention_mask(attention_mask, dtype):
 class ModelGuideHead(nn.Module):
     def __init__(self):
         super().__init__()
+        #self.loss_fnc = nn.BCELoss(reduction='sum')
+        self.loss_fnc = nn.MSELoss(reduction='sum')
 
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (1, x.size(-1))
@@ -39,12 +44,20 @@ class ModelGuideHead(nn.Module):
         hidden_states_src, hidden_states_tgt,
         inputs_src, inputs_tgt,
         guide=None,
-        extraction='softmax', softmax_threshold=0.1,
+        extraction='softmax', alignment_threshold=0.1,
+        entropy_regularization = 0.1,
+        marginal_regularization = 0.5,
+        fertility_distribution = 'l2_norm',
+        cost_function = "cosine_sim",
         output_prob=False,
     ):
         #mask
         attention_mask_src = ( (inputs_src==PAD_ID) + (inputs_src==CLS_ID) + (inputs_src==SEP_ID) ).float()
         attention_mask_tgt = ( (inputs_tgt==PAD_ID) + (inputs_tgt==CLS_ID) + (inputs_tgt==SEP_ID) ).float()
+
+        mask_src = 1 - attention_mask_src
+        mask_tgt = 1 - attention_mask_tgt
+
         len_src = torch.sum(1-attention_mask_src, -1)
         len_tgt = torch.sum(1-attention_mask_tgt, -1)
         attention_mask_src = return_extended_attention_mask(1-attention_mask_src, hidden_states_src.dtype)
@@ -58,48 +71,167 @@ class ModelGuideHead(nn.Module):
         value_src = query_src
         value_tgt = query_tgt
 
-        print(query_src.size())
-        print(key_tgt.size())
+        ###
+        if extraction in ["balancedOT", "unbalancedOT", "partialOT"]:
+            # Iterate through embeddings
+            output_source = torch.full((query_src.size()[0], 1, query_src.size()[2], key_tgt.size()[2]), 0.0)
+            output_target = torch.full((query_src.size()[0], 1, query_src.size()[2], key_tgt.size()[2]), 0.0)
+            
+            so_loss = 0
+            
+            for i, (source, target, source_mask, target_mask) in enumerate(zip(query_src, key_tgt, mask_src, mask_tgt)):
 
-        #att
-        attention_scores = torch.matmul(query_src, key_tgt.transpose(-1, -2))
-        attention_scores_src = attention_scores + attention_mask_tgt
-        attention_scores_tgt = attention_scores + attention_mask_src.transpose(-1, -2)
+                # Extract non-masked tokens
+                nomask_source = source[0][source_mask.nonzero()].squeeze(1)
+                nomask_target = target[0][target_mask.nonzero()].squeeze(1)
+            
+                eps = 1e-10
+                if cost_function == "cosine_sim":
+                    cosine_similarity = (torch.matmul(torch.nn.functional.normalize(nomask_source), torch.nn.functional.normalize(nomask_target).t()) + 1.0) / 2
+                    cosine_min = cosine_similarity.min()
+                    cosine_max = cosine_similarity.max()
+                    cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
+                    distance = 1 - cosine_similarity
+                elif cost_function == "euclidean_distance":
+                    euclidean_distance = torch.cdist(nomask_source, nomask_target, p=2)
+                    euclidean_min = euclidean_distance.min()
+                    euclidean_max = euclidean_distance.max()
+                    euclidean_distance = (euclidean_distance - euclidean_min + eps) / (euclidean_max - euclidean_min + eps)
+                    distance = euclidean_distance
 
-        print("Attention")
-        print(attention_scores_src.size())
-        print(attention_scores_tgt.size())
+                size = distance.size()
 
+                # Create initial distributions
+                if fertility_distribution == "uniform":
+                    source_distribution = torch.full((size[0],1), 1.0 / size[0]).squeeze(1)
+                    target_distribution = torch.full((size[1],1), 1.0 / size[1]).squeeze(1)
+                elif fertility_distribution == "l2_norm":
+                    source_norms = torch.linalg.norm(nomask_source, dim=1)
+                    source_distribution = source_norms /  torch.sum(source_norms)
 
-        attention_probs_src = nn.Softmax(dim=-1)(attention_scores_src) #if extraction == 'softmax' else entmax15(attention_scores_src, dim=-1)
-        attention_probs_tgt = nn.Softmax(dim=-2)(attention_scores_tgt) #if extraction == 'softmax' else entmax15(attention_scores_tgt, dim=-2)
-
-
-
-        if guide is None:
-
-            threshold = softmax_threshold if extraction == 'softmax' else 0
-            align_matrix = (attention_probs_src>threshold)*(attention_probs_tgt>threshold)
-            if not output_prob:
-                return align_matrix
-            # A heuristic of generating the alignment probability
-            attention_probs_src = nn.Softmax(dim=-1)(attention_scores_src/torch.sqrt(len_tgt.view(-1, 1, 1, 1)))
-            attention_probs_tgt = nn.Softmax(dim=-2)(attention_scores_tgt/torch.sqrt(len_src.view(-1, 1, 1, 1)))
-            align_prob = (2*attention_probs_src*attention_probs_tgt)/(attention_probs_src+attention_probs_tgt+1e-9)
-            return align_matrix, align_prob
-
-
-
-
-        so_loss_src = torch.sum(torch.sum (attention_probs_src*guide, -1), -1).view(-1)
-        so_loss_tgt = torch.sum(torch.sum (attention_probs_tgt*guide, -1), -1).view(-1)
-
-        so_loss = so_loss_src/len_src + so_loss_tgt/len_tgt
-        so_loss = -torch.mean(so_loss)
+                    target_norms = torch.linalg.norm(nomask_target, dim=1)
+                    target_distribution = target_norms /  torch.sum(target_norms)
 
 
+                reg = entropy_regularization
+                reg_m = marginal_regularization
+                if extraction == "balancedOT":
+                    transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, distance, reg, numItermax = 500)
+                elif extraction == "unbalancedOT":
+                    transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, distance, reg, reg_m)
+                elif extraction == "partialOT":
+                    transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, distance, reg)
 
-        return so_loss
+                torch.set_printoptions(sci_mode=False)
+                
+                # Min-max Norm
+                # eps = 1e-10
+                # matrix_min = transition_matrix.min()
+                # matrix_max = transition_matrix.max()
+                # transition_matrix = (transition_matrix - matrix_min + eps) / (matrix_max - matrix_min + eps)
+                # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+                # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+
+                # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+                # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+
+                # Column/Row Sum
+                transition_source = transition_matrix / torch.sum(transition_matrix, 1).unsqueeze(1)
+                transition_target = transition_matrix / torch.sum(transition_matrix, 0).unsqueeze(0)
+
+                output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_source
+                output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_target
+
+                # No Postprocessing
+                # transition_source = transition_matrix
+                # transition_target = transition_matrix
+                # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+                # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+
+                # transition_source = transition_matrix / (source_distribution.unsqueeze(1))
+                # transition_target = transition_matrix / (target_distribution.unsqueeze(0))
+
+
+                if guide is not None:
+                    #MSE LOSS
+                    # so_loss += torch.nn.MSELoss()(transition_source, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+                    # so_loss += torch.nn.MSELoss()(transition_target, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+
+                    # so_loss += torch.nn.MSELoss()(transition_matrix, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+
+                    #OTHER LOSS FUNCTION
+                    so_loss += self.loss_fnc(transition_source, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+                    so_loss += self.loss_fnc(transition_target, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+                    # so_loss += self.loss_fnc(transition_matrix, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+
+                    # so_loss_src = torch.sum(torch.sum (transition_source*guide[i, 0, 1:size[0] + 1, 1:size[1] + 1], -1), -1).view(-1)
+                    # so_loss_tgt = torch.sum(torch.sum (transition_target*guide[i, 0, 1:size[0] + 1, 1:size[1] + 1], -1), -1).view(-1)
+
+                    # loss = so_loss_src/len_src + so_loss_tgt/len_tgt
+
+                    # loss = torch.sum(torch.sum((1 - distance) *guide[i, 0, 1:size[0] + 1, 1:size[1] + 1], -1), -1).view(-1)
+                    # so_loss = so_loss - torch.sum(loss)
+
+                    #so_loss += self.loss_fnc((1 - distance), guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+
+
+                    #print(so_loss)
+
+
+            if guide is None:
+                align_matrix = (output_source > alignment_threshold) * (output_target > alignment_threshold)
+                if not output_prob:
+                    return align_matrix
+                # A heuristic of generating the alignment probability
+                attention_probs_src = nn.Softmax(dim=-1)(align_matrix/torch.sqrt(len_tgt.view(-1, 1, 1, 1)))
+                attention_probs_tgt = nn.Softmax(dim=-2)(align_matrix/torch.sqrt(len_src.view(-1, 1, 1, 1)))
+                align_prob = (2*attention_probs_src*attention_probs_tgt)/(attention_probs_src+attention_probs_tgt+1e-9)
+                return align_matrix, align_prob
+
+
+
+            # so_loss_src = torch.sum(torch.sum (output_source*guide, -1), -1).view(-1)
+            # so_loss_tgt = torch.sum(torch.sum (output_target*guide, -1), -1).view(-1)
+
+            # so_loss = so_loss_src/len_src + so_loss_tgt/len_tgt
+            # so_loss = -torch.mean(so_loss)
+
+            #so_loss = torch.nn.BCELoss()(output, guide)
+            so_loss = so_loss / query_src.size()[0]
+            # print(so_loss)
+
+            return so_loss
+
+        elif extraction == 'softmax':                
+            # att
+            attention_scores = torch.matmul(query_src, key_tgt.transpose(-1, -2))
+            attention_scores_src = attention_scores + attention_mask_tgt
+            attention_scores_tgt = attention_scores + attention_mask_src.transpose(-1, -2)
+
+            attention_probs_src = nn.Softmax(dim=-1)(
+                attention_scores_src)  # if extraction == 'softmax' else entmax15(attention_scores_src, dim=-1)
+            attention_probs_tgt = nn.Softmax(dim=-2)(
+                attention_scores_tgt)  # if extraction == 'softmax' else entmax15(attention_scores_tgt, dim=-2)
+
+            if guide is None:
+                # threshold = softmax_threshold if extraction == 'softmax' else 0
+                
+                align_matrix = (attention_probs_src > alignment_threshold) * (attention_probs_tgt > alignment_threshold)
+                if not output_prob:
+                    return align_matrix
+                # A heuristic of generating the alignment probability
+                attention_probs_src = nn.Softmax(dim=-1)(attention_scores_src/torch.sqrt(len_tgt.view(-1, 1, 1, 1)))
+                attention_probs_tgt = nn.Softmax(dim=-2)(attention_scores_tgt/torch.sqrt(len_src.view(-1, 1, 1, 1)))
+                align_prob = (2*attention_probs_src*attention_probs_tgt)/(attention_probs_src+attention_probs_tgt+1e-9)
+                return align_matrix, align_prob
+
+            so_loss_src = torch.sum(torch.sum (attention_probs_src*guide, -1), -1).view(-1)
+            so_loss_tgt = torch.sum(torch.sum (attention_probs_tgt*guide, -1), -1).view(-1)
+
+            so_loss = so_loss_src/len_src + so_loss_tgt/len_tgt
+            so_loss = -torch.mean(so_loss)
+            return so_loss
+
 
 
 
@@ -121,7 +253,11 @@ class BertForSO(PreTrainedModel):
             attention_mask_tgt=None,
             align_layer=6,
             guide=None,
-            extraction='softmax', softmax_threshold=0.1,
+            extraction='softmax', alignment_threshold=0.1,
+            entropy_regularization = 0.1,
+            marginal_regularization = 0.5,
+            fertility_distribution = 'l2_norm',
+            cost_function = 'cosine_sim',
             position_ids1=None,
             position_ids2=None,
             do_infer=False,
@@ -155,14 +291,22 @@ class BertForSO(PreTrainedModel):
 
 
         sco_loss = self.guide_layer(hidden_states_src, hidden_states_tgt, inputs_src, inputs_tgt, guide=guide,
-                                    extraction=extraction, softmax_threshold=softmax_threshold)
+                                    extraction=extraction, alignment_threshold=alignment_threshold,                                                    entropy_regularization = entropy_regularization,
+                                    fertility_distribution = fertility_distribution,
+                                    marginal_regularization = marginal_regularization,
+                                    cost_function = cost_function)
         return sco_loss
 
     def save_adapter(self, save_directory, adapter_name):
         self.model.save_adapter(save_directory, adapter_name)
         
     def get_aligned_word(self, inputs_src, inputs_tgt, bpe2word_map_src, bpe2word_map_tgt, device, src_len, tgt_len,
-                         align_layer=6, extraction='softmax', softmax_threshold=0.1, test=False, output_prob=False,
+                         align_layer=6, extraction='softmax', alignment_threshold=0.1, 
+                         entropy_regularization = 0.1,
+                         marginal_regularization = 0.5,                         
+                         fertility_distribution = 'l2_norm',
+                         cost_function = 'cosine_sim',
+                         test=False, output_prob=False,
                          word_aligns=None, pairs_len=None):
         batch_size = inputs_src.size(0)
         bpelen_src, bpelen_tgt = inputs_src.size(1) - 2, inputs_tgt.size(1) - 2
@@ -185,7 +329,9 @@ class BertForSO(PreTrainedModel):
                 hidden_states_tgt = outputs_tgt.hidden_states[align_layer]
 
                 attention_probs_inter = self.guide_layer(hidden_states_src, hidden_states_tgt, inputs_src, inputs_tgt,
-                                                         extraction=extraction, softmax_threshold=softmax_threshold,
+                                                         extraction=extraction, alignment_threshold=alignment_threshold,
+                                                         entropy_regularization = entropy_regularization,
+                                                         marginal_regularization = marginal_regularization,
                                                          output_prob=output_prob)
                 if output_prob:
                     attention_probs_inter, alignment_probs = attention_probs_inter

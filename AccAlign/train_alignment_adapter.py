@@ -201,12 +201,21 @@ def train(args, train_dataset, model, tokenizer) -> Tuple[int, float]:
 
             guides = model.get_aligned_word(examples_src, examples_tgt, bpe2word_map_src, bpe2word_map_tgt,
                                                    args.device, src_len, tgt_len, align_layer=args.align_layer,
-                                                   extraction=args.extraction, softmax_threshold=args.softmax_threshold,
+                                                   extraction=args.extraction, alignment_threshold=args.alignment_threshold,
+                                                   entropy_regularization = args.entropy_regularization,
+                                                   marginal_regularization = args.marginal_regularization,
+                                                   fertility_distribution = args.fertility_distribution,
+                                                   cost_function = args.cost_function,
                                                    word_aligns=word_aligns, pairs_len=pairs_len)
         else:
             guides = model.get_aligned_word(examples_src, examples_tgt, bpe2word_map_src, bpe2word_map_tgt, args.device,
                                             src_len, tgt_len, align_layer=args.align_layer, extraction=args.extraction,
-                                            softmax_threshold=args.softmax_threshold, word_aligns=word_aligns, pairs_len=pairs_len)
+                                            alignment_threshold=args.alignment_threshold, 
+                                            entropy_regularization = args.entropy_regularization,
+                                            marginal_regularization = args.marginal_regularization,
+                                            fertility_distribution = args.fertility_distribution,
+                                            cost_function = args.cost_function,
+                                            word_aligns=word_aligns, pairs_len=pairs_len)
 
         return examples_src, examples_tgt, guides
 
@@ -305,7 +314,11 @@ def train(args, train_dataset, model, tokenizer) -> Tuple[int, float]:
                 guide = batch[2].to(args.device)
                 loss = model(inputs_src=inputs_src, inputs_tgt=inputs_tgt, attention_mask_src=attention_mask_src,
                              attention_mask_tgt=attention_mask_tgt, guide=guide, align_layer=args.align_layer,
-                             extraction=args.extraction, softmax_threshold=args.softmax_threshold,
+                             extraction=args.extraction, alignment_threshold=args.alignment_threshold,
+                             entropy_regularization = args.entropy_regularization,
+                             marginal_regularization = args.marginal_regularization,
+                             fertility_distribution = args.fertility_distribution,
+                             cost_function = args.cost_function,
                              )
                 tr_loss = backward_loss(loss, tr_loss)
 
@@ -399,7 +412,12 @@ def evaluate(args, model, tokenizer, global_step, prefix="") -> Dict:
 
         guides = model.get_aligned_word(examples_src, examples_tgt, bpe2word_map_src, bpe2word_map_tgt, args.device,
                                         src_len, tgt_len, align_layer=args.align_layer, extraction=args.extraction,
-                                        softmax_threshold=args.softmax_threshold, test=False, word_aligns=word_aligns,pairs_len=pairs_len)
+                                        alignment_threshold=args.alignment_threshold, 
+                                        entropy_regularization = args.entropy_regularization,
+                                        marginal_regularization = args.marginal_regularization, 
+                                        fertility_distribution = args.fertility_distribution,
+                                        cost_function = args.cost_function,
+                                        test=False, word_aligns=word_aligns,pairs_len=pairs_len)
 
         return examples_src, examples_tgt, guides, bpe2word_map_src, bpe2word_map_tgt
 
@@ -442,7 +460,12 @@ def evaluate(args, model, tokenizer, global_step, prefix="") -> Dict:
 
             word_aligns_list_batch = model.get_aligned_word(inputs_src, inputs_tgt, bpe2word_map_src, bpe2word_map_tgt, args.device, [],
                              [],
-                             align_layer=6, extraction='softmax', softmax_threshold=0.1, test=True,
+                             align_layer=6, extraction=args.extraction, alignment_threshold=args.alignment_threshold, 
+                             entropy_regularization = args.entropy_regularization,
+                             marginal_regularization = args.marginal_regularization, 
+                             fertility_distribution = args.fertility_distribution, 
+                             cost_function = args.cost_function,                           
+                             test=True,
                              output_prob=False,
                              word_aligns=None, pairs_len=None)
 
@@ -547,7 +570,19 @@ def main():
         "--extraction", default='softmax', type=str, choices=['softmax', 'balancedOT', 'unbalancedOT', 'partialOT'], help='softmax, balancedOT, unbalancedOT, or partialOT'
     )
     parser.add_argument(
-        "--softmax_threshold", type=float, default=0.1
+        "--alignment_threshold", type=float, default=0.1
+    )
+    parser.add_argument(
+        "--entropy_regularization", type=float, default=0.1
+    )
+    parser.add_argument(
+        "--marginal_regularization", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--fertility_distribution", default='l2_norm', type=str, choices=['l2_norm', 'uniform'], help='l2_norm, uniform'
+    )
+    parser.add_argument(
+        "--cost_function", default='cosine_sim', type=str, choices=['cosine_sim', 'euclidean_distance'], help='cosine_sim, euclidean_distance'
     )
 
     parser.add_argument(

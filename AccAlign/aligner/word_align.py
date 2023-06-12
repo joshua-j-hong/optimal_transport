@@ -12,7 +12,7 @@ import torch.nn as nn
 from train_utils import get_logger
 
 import ot
-from torchmetrics.functional import pairwise_cosine_similarity
+from torchmetrics.functional import pairwise_cosine_similarity, pairwise_euclidean_distance
 
 LOG = get_logger(__name__)
 
@@ -43,7 +43,7 @@ class SentenceAligner_word(object):
     def __init__(self, args, model):
 
         self.guide = None
-        self.softmax_threshold = args.softmax_threshold
+        self.alignment_threshold = args.alignment_threshold
         self.embed_loader = model
 
     def transpose_for_scores(self, x):
@@ -56,7 +56,7 @@ class SentenceAligner_word(object):
         output_src,output_tgt = self.embed_loader(
             inputs_src=inputs_src, inputs_tgt=inputs_tgt, attention_mask_src=(inputs_src != PAD_ID),
             attention_mask_tgt=(inputs_tgt != PAD_ID), guide=None, align_layer=args.align_layer,
-            extraction=args.extraction, softmax_threshold=args.softmax_threshold, do_infer=True,
+            extraction=args.extraction, alignment_threshold=args.alignment_threshold, do_infer=True,
         )
 
         align_matrix_all_layers = {}
@@ -88,7 +88,14 @@ class SentenceAligner_word(object):
 
             if args.extraction in ["balancedOT", "unbalancedOT", "partialOT"]:
                 # Iterate through embeddings
-                output = torch.full((query_src.size()[0], 1, query_src.size()[2], key_tgt.size()[2]), 0.0)
+                output_source = torch.full((query_src.size()[0], 1, query_src.size()[2], key_tgt.size()[2]), 0.0)
+                output_target = torch.full((query_src.size()[0], 1, query_src.size()[2], key_tgt.size()[2]), 0.0)
+
+                # embed_mean = (torch.sum(query_src, (0,2)) + torch.sum(key_tgt, (0,2))) / (query_src.size()[0] * query_src.size()[2] + key_tgt.size()[0] * key_tgt.size()[2])
+                # query_src = query_src - embed_mean
+                # key_tgt = key_tgt - embed_mean
+
+
                 for i, (source, target, source_mask, target_mask) in enumerate(zip(query_src, key_tgt, mask_src, mask_tgt)):
 
                     # Extract non-masked tokens
@@ -96,34 +103,67 @@ class SentenceAligner_word(object):
                     nomask_target = target[0][target_mask.nonzero()].squeeze(1)
                 
                     # Calculate cosine distance and normalize
-                    cosine_distance = 1 - pairwise_cosine_similarity(nomask_source, nomask_target)
-                    #cosine_sim = torch.nan_to_num(cosine_sim)
-                    size = cosine_distance.size()
-                    cosine_distance -= cosine_distance.min()
-                    cosine_distance /= cosine_distance.max()
+
+                    eps = 1e-10
+                    if args.cost_function == "cosine_sim":
+                        cosine_similarity = (torch.matmul(torch.nn.functional.normalize(nomask_source), torch.nn.functional.normalize(nomask_target).t()) + 1.0) / 2
+                        cosine_min = cosine_similarity.min()
+                        cosine_max = cosine_similarity.max()
+                        cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
+
+                        distance = 1 - cosine_similarity
+
+                    elif args.cost_function == "euclidean_distance":
+                        euclidean_distance = torch.cdist(nomask_source, nomask_target, p=2)
+                        euclidean_min = euclidean_distance.min()
+                        euclidean_max = euclidean_distance.max()
+                        euclidean_distance = (euclidean_distance - euclidean_min + eps) / (euclidean_max - euclidean_min + eps)
+                        distance = euclidean_distance
+
+                    size = distance.size()
 
                     # Create initial distributions
-                    source_distribution = torch.full((size[0],1), 1.0 / size[0]).squeeze(1)
-                    target_distribution = torch.full((size[1],1), 1.0 / size[1]).squeeze(1)
 
-                    reg = 0.1
-                    reg_m = 0.1
+                    if args.fertility_distribution == "uniform":
+                        source_distribution = torch.full((size[0],1), 1.0 / size[0]).squeeze(1)
+                        target_distribution = torch.full((size[1],1), 1.0 / size[1]).squeeze(1)
+                    elif args.fertility_distribution == "l2_norm":
+                        source_norms = torch.linalg.norm(nomask_source, dim=1)
+                        source_distribution = source_norms /  torch.sum(source_norms)
+
+                        target_norms = torch.linalg.norm(nomask_target, dim=1)
+                        target_distribution = target_norms /  torch.sum(target_norms)
+
+                    reg = args.entropy_regularization
+                    reg_m = args.marginal_regularization
+                    # Apply OT
                     if args.extraction == "balancedOT":
-                        transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, cosine_distance, reg, numItermax = 250)
+                        transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, distance, reg, numItermax = 500)
                     elif args.extraction == "unbalancedOT":
-                        transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, cosine_distance, reg, reg_m)
+                        transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, distance, reg, reg_m)
                     elif args.extraction == "partialOT":
-                        transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, cosine_distance, reg)
+                        transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, distance, reg)
 
-                    output[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+                    # Min-max Norm
+                    # eps = 1e-10
+                    # matrix_min = transition_matrix.min()
+                    # matrix_max = transition_matrix.max()
+                    # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = (transition_matrix - matrix_min + eps) / (matrix_max - matrix_min + eps)
+                    # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = (transition_matrix - matrix_min + eps) / (matrix_max - matrix_min + eps)
+
+                    # Column/Row Sum
+                    transition_source = transition_matrix / torch.sum(transition_matrix, 1).unsqueeze(1)
+                    transition_target = transition_matrix / torch.sum(transition_matrix, 0).unsqueeze(0)
+
+                    output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_source
+                    output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_target
+
+                    # No Postprocessing
+                    # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+                    # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
 
                 if self.guide is None:
-                    if args.extraction == "balancedOT":
-                        align_matrix = output > 0.005
-                    elif args.extraction == "unbalancedOT":
-                        align_matrix = output > 0.01
-                    elif args.extraction == "partialOT":
-                        align_matrix = output > 0.01
+                    align_matrix = (output_source > self.alignment_threshold) * (output_target > self.alignment_threshold)
 
                     if not output_prob:
                         # return align_matrix
@@ -142,9 +182,8 @@ class SentenceAligner_word(object):
 
                 if self.guide is None:
                     # threshold = softmax_threshold if extraction == 'softmax' else 0
-                    threshold = self.softmax_threshold
                     
-                    align_matrix = (attention_probs_src > threshold) * (attention_probs_tgt > threshold)
+                    align_matrix = (attention_probs_src > self.alignment_threshold) * (attention_probs_tgt > self.alignment_threshold)
                     if not output_prob:
                         # return align_matrix
                         align_matrix_all_layers[layer_id] = align_matrix
