@@ -103,22 +103,39 @@ class SentenceAligner_word(object):
                     nomask_target = target[0][target_mask.nonzero()].squeeze(1)
                 
                     # Calculate cosine distance and normalize
-
                     eps = 1e-10
                     if args.cost_function == "cosine_sim":
                         cosine_similarity = (torch.matmul(torch.nn.functional.normalize(nomask_source), torch.nn.functional.normalize(nomask_target).t()) + 1.0) / 2
-                        cosine_min = cosine_similarity.min()
-                        cosine_max = cosine_similarity.max()
-                        cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
+                        # Matrix normalize
+                        # cosine_min = cosine_similarity.min()
+                        # cosine_max = cosine_similarity.max()
+                        # cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
 
                         distance = 1 - cosine_similarity
+                        # Row/Column normalize
+                        source_min = distance.min(1)[0].unsqueeze(1)
+                        target_min = distance.min(0)[0].unsqueeze(0)
+                        source_norm_distance = (distance - source_min + eps) / (distance.max(1)[0].unsqueeze(1) - source_min + eps)
+                        target_norm_distance = (distance - target_min + eps) / (distance.max(0)[0].unsqueeze(0) - target_min + eps)
+
+                        distance = source_norm_distance
 
                     elif args.cost_function == "euclidean_distance":
                         euclidean_distance = torch.cdist(nomask_source, nomask_target, p=2)
-                        euclidean_min = euclidean_distance.min()
-                        euclidean_max = euclidean_distance.max()
-                        euclidean_distance = (euclidean_distance - euclidean_min + eps) / (euclidean_max - euclidean_min + eps)
-                        distance = euclidean_distance
+                        # Matrix normalize
+                        # euclidean_min = euclidean_distance.min()
+                        # euclidean_max = euclidean_distance.max()
+                        # euclidean_distance = (euclidean_distance - euclidean_min + eps) / (euclidean_max - euclidean_min + eps)
+                        # distance = euclidean_distance
+                        # source_norm_distance = distance
+                        # target_norm_distance = distance
+
+                        # Row/Column normalize
+                        source_min = euclidean_distance.min(1)[0].unsqueeze(1)
+                        target_min = euclidean_distance.min(0)[0].unsqueeze(0)
+                        source_norm_distance = (euclidean_distance - source_min + eps) / (euclidean_distance.max(1)[0].unsqueeze(1) - source_min + eps)
+                        target_norm_distance = (euclidean_distance - target_min + eps) / (euclidean_distance.max(0)[0].unsqueeze(0) - target_min + eps)
+                        distance = source_norm_distance
 
                     size = distance.size()
 
@@ -126,7 +143,9 @@ class SentenceAligner_word(object):
 
                     if args.fertility_distribution == "uniform":
                         source_distribution = torch.full((size[0],1), 1.0 / size[0]).squeeze(1)
+                        source_norms = source_distribution
                         target_distribution = torch.full((size[1],1), 1.0 / size[1]).squeeze(1)
+                        target_norms = target_distribution
                     elif args.fertility_distribution == "l2_norm":
                         source_norms = torch.linalg.norm(nomask_source, dim=1)
                         source_distribution = source_norms /  torch.sum(source_norms)
@@ -136,39 +155,47 @@ class SentenceAligner_word(object):
 
                     reg = args.entropy_regularization
                     reg_m = args.marginal_regularization
+                    mass_transported = args.mass_transported
                     # Apply OT
                     if args.extraction == "balancedOT":
-                        transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, distance, reg, numItermax = 500)
+                        source_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, source_norm_distance, reg, numItermax = 300)
+                        target_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, target_norm_distance, reg, numItermax = 300)
                     elif args.extraction == "unbalancedOT":
-                        transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, distance, reg, reg_m)
+                        source_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_norms, target_norms, source_norm_distance, reg, reg_m)
+                        target_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_norms, target_norms, target_norm_distance, reg, reg_m)
+
                     elif args.extraction == "partialOT":
-                        transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, distance, reg)
+                        m = mass_transported * torch.minimum(torch.sum(source_distribution), torch.sum(target_distribution))
 
-                    # Min-max Norm
-                    # eps = 1e-10
-                    # matrix_min = transition_matrix.min()
-                    # matrix_max = transition_matrix.max()
-                    # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = (transition_matrix - matrix_min + eps) / (matrix_max - matrix_min + eps)
-                    # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = (transition_matrix - matrix_min + eps) / (matrix_max - matrix_min + eps)
+                        source_transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, source_norm_distance, reg, m)
+                        target_transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, target_norm_distance, reg, m)
 
-                    # Column/Row Sum
-                    transition_source = transition_matrix / torch.sum(transition_matrix, 1).unsqueeze(1)
-                    transition_target = transition_matrix / torch.sum(transition_matrix, 0).unsqueeze(0)
+                    transition_source = source_transition_matrix
+                    transition_target = target_transition_matrix
+
+                    # transition_source = torch.div(source_transition_matrix, source_norms.unsqueeze(1))
+                    # transition_target = torch.div(target_transition_matrix, target_norms.unsqueeze(0))
+
+                    eps = 1e-10
+                    matrix_min = transition_source.min()
+                    matrix_max = transition_source.max()
+                    transition_source = (transition_source - matrix_min + eps) / (matrix_max - matrix_min + eps)
+
+                    matrix_min = transition_target.min()
+                    matrix_max = transition_target.max()
+                    transition_target = (transition_target - matrix_min + eps) / (matrix_max - matrix_min + eps)
 
                     output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_source
                     output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_target
 
-                    # No Postprocessing
-                    # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
-                    # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
-
                 if self.guide is None:
-                    align_matrix = (output_source > self.alignment_threshold) * (output_target > self.alignment_threshold)
+                    align_matrix = (output_source > args.alignment_threshold) * (output_target > args.alignment_threshold)
 
                     if not output_prob:
                         # return align_matrix
                         align_matrix_all_layers[layer_id] = align_matrix
-                    # A heuristic of generating the alignment probability
+                    else:
+                        align_matrix_all_layers[layer_id] = torch.minimum(output_source, output_target)
             elif args.extraction == 'softmax':                
                 # att
                 attention_scores = torch.matmul(query_src, key_tgt.transpose(-1, -2))
@@ -211,6 +238,41 @@ class SentenceAligner_word(object):
         for layer_id in attention_probs_inter_all_layers:
 
             attention_probs_inter = attention_probs_inter_all_layers[layer_id].float()
+
+            word_aligns = []
+            attention_probs_inter = attention_probs_inter[:, 0, 1:-1, 1:-1]
+
+            for idx, (attention, b2w_src, b2w_tgt) in enumerate(
+                    zip(attention_probs_inter, bpe2word_map_src, bpe2word_map_tgt)):
+                aligns = set() if not output_prob else dict()
+                non_zeros = torch.nonzero(attention)
+                for i, j in non_zeros:
+                    word_pair = (b2w_src[i], b2w_tgt[j])
+                    if output_prob:
+                        prob = alignment_probs[idx, i, j]
+                        if not word_pair in aligns:
+                            aligns[word_pair] = prob
+                        else:
+                            aligns[word_pair] = max(aligns[word_pair], prob)
+                    else:
+                        aligns.add(word_pair)
+                word_aligns.append(aligns)
+            word_aligns_all_layers[layer_id] = word_aligns
+        return word_aligns_all_layers
+
+    def get_aligned_word_from_matrix(self, args, inputs_src, inputs_tgt, matrix, bpe2word_map_src, bpe2word_map_tgt, PAD_ID, CLS_ID, SEP_ID,
+                         threshold, output_prob=False):
+
+        attention_probs_inter_all_layers = matrix
+        if output_prob:
+            attention_probs_inter, alignment_probs = attention_probs_inter
+            alignment_probs = alignment_probs[:, 0, 1:-1, 1:-1]
+
+        word_aligns_all_layers = {}
+
+        for layer_id in attention_probs_inter_all_layers:
+
+            attention_probs_inter = (attention_probs_inter_all_layers[layer_id] > threshold).float()
 
             word_aligns = []
             attention_probs_inter = attention_probs_inter[:, 0, 1:-1, 1:-1]

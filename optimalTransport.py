@@ -242,6 +242,46 @@ def main():
         shutil.copyfile('./data/datasets/kftt-alignments/data/english-test.txt', './data/pre_processed_data/accAlign/JaEn/en')
         shutil.copyfile('./data/datasets/kftt-alignments/data/japanese-test.txt', './data/pre_processed_data/accAlign/JaEn/ja')
 
+        # Create supervised training files
+        os.mkdir(f'./data/pre_processed_data/accAlign/JaEn_training/')
+        os.mkdir(f'./data/pre_processed_data/accAlign/JaEn_training/train_data')
+        os.mkdir(f'./data/pre_processed_data/accAlign/JaEn_training/dev_data')
+
+        train_src = open(f'./data/pre_processed_data/accAlign/JaEn_training/train_data/train.src', 'w') 
+        train_tgt = open(f'./data/pre_processed_data/accAlign/JaEn_training/train_data/train.tgt', 'w') 
+        train_talp = open(f'./data/pre_processed_data/accAlign/JaEn_training/train_data/train.talp', 'w') 
+
+        for num in range(1,16):
+            en = open(f'./data/datasets/kftt-alignments/data/english-{str(num).zfill(3)}.txt', 'r')
+            enLines = en.readlines()
+            for enLine in enLines:
+                train_tgt.write(enLine)
+
+            ja = open(f'./data/datasets/kftt-alignments/data/japanese-{str(num).zfill(3)}.txt', 'r')
+            jaLines = ja.readlines()
+            for jaLine in jaLines:
+                train_src.write(jaLine)
+
+            align = open(f'./data/datasets/kftt-alignments/data/align-{str(num).zfill(3)}.txt', 'r')
+            alignments = align.readlines()
+            for alignment in alignments:
+                train_talp.write([alignment.split])
+
+            en.close()
+            ja.close()
+            align.close()
+
+        train_src.close()
+        train_tgt.close()
+        train_talp.close()
+
+        # Copy over dev set files for accAlign
+        shutil.copyfile('./data/datasets/kftt-alignments/data/english-dev.txt', './data/pre_processed_data/accAlign/JaEn_training/dev_data/dev.tgt')
+        shutil.copyfile('./data/datasets/kftt-alignments/data/japanese-dev.txt', './data/pre_processed_data/accAlign/JaEn_training/dev_data/dev.src')
+        shutil.copyfile('./data/datasets/kftt-alignments/data/align-dev.txt', './data/pre_processed_data/accAlign/JaEn_training/dev_data/dev.talp')
+
+
+
         jaenAwesomeAlign = open(f'./data/pre_processed_data/awesomeAlign/JaEn/jaen.src-tgt', 'w') 
 
         en = open(f'./data/datasets/kftt-alignments/data/english-test.txt', 'r')

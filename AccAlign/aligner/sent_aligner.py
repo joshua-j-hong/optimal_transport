@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 from aligner.word_align import SentenceAligner_word
 from tqdm import tqdm
+from aer import calculate_metrics
 
 
 
@@ -131,8 +132,6 @@ def word_align(args, tokenizer, model, folder_path, src_path, tgt_path):
                 else:
                     word_aligns_list_all_layer_dic[layer_id] = word_aligns_list_all_layer_dic[layer_id] + word_aligns_list_all_layer_dic_one_batch[layer_id]
 
-
-
     for layer_id in word_aligns_list_all_layer_dic:
         with open(os.path.join(folder_path, f'{"XX2XX.align"}.{str(layer_id)}'),'w', encoding='utf-8') as writers:
             for word_aligns in word_aligns_list_all_layer_dic[layer_id]:
@@ -142,6 +141,154 @@ def word_align(args, tokenizer, model, folder_path, src_path, tgt_path):
                         output_str.append(f'{word_align[0]}-{word_align[1]}')
                 writers.write(' '.join(output_str) + '\n')
 
+def parse_single_alignment(string, reverse=False, one_indexed=False):
+    assert ('-' in string or 'p' in string) and 'Bad Alignment separator'
+
+    a, b = string.replace('p', '-').split('-')
+    a, b = int(a), int(b)
+
+    if one_indexed:
+        a = a - 1
+        b = b - 1
+
+    #if reverse:
+    #    a, b = b, a
+
+    return a, b
+
+def read_text(path):
+    if path == "":
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return [l.split() for l in f]
+
+def hyperparam_search(args, tokenizer, model, gold_labels, src_path, tgt_path):
+
+    device = torch.device('cuda:1')
+    def collate(examples):
+        ids_src, ids_tgt, bpe2word_map_src, bpe2word_map_tgt, sents_src, sents_tgt = zip(*examples)
+        ids_src = pad_sequence(ids_src, batch_first=True, padding_value=tokenizer.pad_token_id)
+        ids_tgt = pad_sequence(ids_tgt, batch_first=True, padding_value=tokenizer.pad_token_id)
+        return ids_src, ids_tgt, bpe2word_map_src, bpe2word_map_tgt, sents_src, sents_tgt
+
+
+    dataset = LineByLineTextDataset(tokenizer, file_path_src=src_path, file_path_tgt=tgt_path)
+    dataloader = DataLoader(
+        dataset, batch_size=args.per_gpu_train_batch_size, collate_fn=collate
+    )
+
+    #Get gold alignments
+    sure, possible = [], []
+    with open(gold_labels, 'r') as f:
+            for line in f:
+                sure.append(set())
+                possible.append(set())
+
+                for alignment_string in line.split():
+
+                    sure_alignment = True if '-' in alignment_string else False
+                    alignment_tuple = parse_single_alignment(alignment_string, args.reverseRef, args.gold_one_index)
+
+                    if sure_alignment or args.allSure:
+                        sure[-1].add(alignment_tuple)
+                    if sure_alignment or not args.ignorePossible:
+                        possible[-1].add(alignment_tuple)
+
+    source, target = map(read_text, [src_path, tgt_path])
+
+    args.entropy_regularization = 0.1
+
+    # Param search
+
+    if args.extraction == "unbalancedOT":
+        best_threshold, best_layer, best_marginal = None, None, None
+        best_Fscore = 0 
+
+        regularize_progress = tqdm(range(0,102,1), desc="Marginal Regularization Value")
+
+        for reg_m in regularize_progress:
+            regularize_progress.set_description(f"Marginal Regularization Value: {reg_m / 100.0}")
+
+            args.marginal_regularization = reg_m / 100.0
+
+            model_sentence = SentenceAligner_word(args, model)
+            word_aligns_list_all_layer_dic = {}
+            model.eval()
+            for batch in dataloader:
+                with torch.no_grad():
+                    ids_src, ids_tgt, bpe2word_map_src, bpe2word_map_tgt, sents_src, sents_tgt = batch
+
+                    ids_src, ids_tgt = ids_src, ids_tgt
+
+                    word_aligns_list_all_layer_dic_one_batch = model_sentence.get_subword_matrix(args, ids_src, ids_tgt, tokenizer.pad_token_id, tokenizer.cls_token_id, tokenizer.sep_token_id, output_prob = True)
+
+                    threshold_progress =  tqdm(range(0,101,1), desc="Threshold Value")
+                    for threshold in threshold_progress: 
+                        threshold_progress.set_description(f"Threshold Value: {threshold / 100.0}")
+
+                        word_alignments = model_sentence.get_aligned_word_from_matrix(args, ids_src, ids_tgt, word_aligns_list_all_layer_dic_one_batch, bpe2word_map_src, bpe2word_map_tgt, tokenizer.pad_token_id, tokenizer.cls_token_id, tokenizer.sep_token_id, (threshold / 100.0))
+
+                        for layer_id in word_alignments:
+
+                            if (layer_id, (threshold / 100.0)) not in word_aligns_list_all_layer_dic:
+                                word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] = word_alignments[layer_id]
+                            else:
+                                word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] = word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] + word_alignments[layer_id]
+
+            for layer_id, threshold in word_aligns_list_all_layer_dic:
+                    precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps = calculate_metrics(sure, possible,  word_aligns_list_all_layer_dic[(layer_id, threshold)], 0.5, source, target, args.cleanPunctuation)
+                    if f_measure > best_Fscore:
+                        best_Fscore = f_measure
+                        best_threshold, best_layer, best_marginal = threshold, layer_id, args.marginal_regularization
+                        print(f'New Best: F-score: {best_Fscore}, reg_m: {best_marginal}, threshold: {best_threshold}, layer: {best_layer}')
+        
+        print("Finished Search")
+        print(f'Best F-score: {best_Fscore}, reg_m: {best_marginal}, threshold: {best_threshold}, layer: {best_layer}')
+
+    elif args.extraction == "partialOT":
+        best_threshold, best_layer, best_mass = None, None, None
+        best_Fscore = 0
+        #Test
+        mass_transported = tqdm(range(99,0,-1), desc="Mass to be transported")
+
+        for mass in mass_transported:
+            mass_transported.set_description(f"Mass to be transported: {mass / 100.0}")
+
+            args.mass_transported = mass / 100.0
+
+            model_sentence = SentenceAligner_word(args, model)
+            word_aligns_list_all_layer_dic = {}
+            model.eval()
+            for batch in dataloader:
+                with torch.no_grad():
+                    ids_src, ids_tgt, bpe2word_map_src, bpe2word_map_tgt, sents_src, sents_tgt = batch
+
+                    ids_src, ids_tgt = ids_src, ids_tgt
+
+                    word_aligns_list_all_layer_dic_one_batch = model_sentence.get_subword_matrix(args, ids_src, ids_tgt, tokenizer.pad_token_id, tokenizer.cls_token_id, tokenizer.sep_token_id, output_prob = True)
+
+                    threshold_progress =  tqdm(range(0,101,1), desc="Threshold Value")
+                    for threshold in threshold_progress: 
+                        threshold_progress.set_description(f"Threshold Value: {threshold / 100.0}")
+
+                        word_alignments = model_sentence.get_aligned_word_from_matrix(args, ids_src, ids_tgt, word_aligns_list_all_layer_dic_one_batch, bpe2word_map_src, bpe2word_map_tgt, tokenizer.pad_token_id, tokenizer.cls_token_id, tokenizer.sep_token_id, (threshold / 100.0))
+
+                        for layer_id in word_alignments:
+
+                            if (layer_id, (threshold / 100.0)) not in word_aligns_list_all_layer_dic:
+                                word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] = word_alignments[layer_id]
+                            else:
+                                word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] = word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] + word_alignments[layer_id]
+
+            for layer_id, threshold in word_aligns_list_all_layer_dic:
+                    precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps = calculate_metrics(sure, possible,  word_aligns_list_all_layer_dic[(layer_id, threshold)], 0.5, source, target, args.cleanPunctuation)
+                    if f_measure > best_Fscore:
+                        best_Fscore = f_measure
+                        best_threshold, best_layer, best_mass = threshold, layer_id, args.mass_transported
+                        print(f'New Best: F-score: {best_Fscore}, mass_transported: {best_mass}, threshold: {best_threshold}, layer: {best_layer}')
+        
+        print("Finished Search")
+        print(f'Best F-score: {best_Fscore}, mass_transported: {best_mass}, threshold: {best_threshold}, layer: {best_layer}')
 
 # def main():
 #     parser = argparse.ArgumentParser()

@@ -123,13 +123,23 @@ def calculate_metrics(array_sure, array_possible, array_hypothesis, f_alpha, sou
                     print(target, len(target), tgt_pos)
                 if (src_pos, tgt_pos) not in P:
                     errors[source[src_pos], target[tgt_pos]] += 1
-
-    precision = sum_a_intersect_p / sum_a
-    recall = sum_a_intersect_s / sum_s
-    aer = 1.0 - ((sum_a_intersect_p + sum_a_intersect_s) / (sum_a + sum_s))
+    if sum_a > 0:
+        precision = sum_a_intersect_p / sum_a
+    else:
+        precision = 0
+    if sum_s > 0:
+        recall = sum_a_intersect_s / sum_s
+    else:
+        recall = 0
+    if (sum_a + sum_s) > 0:
+        aer = 1.0 - ((sum_a_intersect_p + sum_a_intersect_s) / (sum_a + sum_s))
+    else:
+        aer = 1.0
 
     if f_alpha < 0.0:
         f_measure = 0.0
+    elif precision == 0 or recall == 0:
+        f_measure = 0
     else:
         f_divident = f_alpha / precision
         f_divident += (1.0 - f_alpha) / recall

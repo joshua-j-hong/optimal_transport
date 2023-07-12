@@ -31,8 +31,8 @@ def return_extended_attention_mask(attention_mask, dtype):
 class ModelGuideHead(nn.Module):
     def __init__(self):
         super().__init__()
-        #self.loss_fnc = nn.BCELoss(reduction='sum')
-        self.loss_fnc = nn.MSELoss(reduction='sum')
+        self.loss_fnc = nn.BCELoss(reduction='sum')
+        #self.loss_fnc = nn.MSELoss(reduction='sum')
 
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (1, x.size(-1))
@@ -47,6 +47,7 @@ class ModelGuideHead(nn.Module):
         extraction='softmax', alignment_threshold=0.1,
         entropy_regularization = 0.1,
         marginal_regularization = 0.5,
+        mass_transported = 1,
         fertility_distribution = 'l2_norm',
         cost_function = "cosine_sim",
         output_prob=False,
@@ -88,10 +89,19 @@ class ModelGuideHead(nn.Module):
                 eps = 1e-10
                 if cost_function == "cosine_sim":
                     cosine_similarity = (torch.matmul(torch.nn.functional.normalize(nomask_source), torch.nn.functional.normalize(nomask_target).t()) + 1.0) / 2
-                    cosine_min = cosine_similarity.min()
-                    cosine_max = cosine_similarity.max()
-                    cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
+                    # Matrix normalize
+                    # cosine_min = cosine_similarity.min()
+                    # cosine_max = cosine_similarity.max()
+                    # cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
                     distance = 1 - cosine_similarity
+
+                    # Row/Column normalize
+                    source_min = distance.min(1)[0].unsqueeze(1)
+                    target_min = distance.min(0)[0].unsqueeze(0)
+                    source_norm_distance = (distance - source_min + eps) / (distance.max(1)[0].unsqueeze(1) - source_min + eps)
+                    target_norm_distance = (distance - target_min + eps) / (distance.max(0)[0].unsqueeze(0) - target_min + eps)
+                    distance = source_norm_distance
+
                 elif cost_function == "euclidean_distance":
                     euclidean_distance = torch.cdist(nomask_source, nomask_target, p=2)
                     euclidean_min = euclidean_distance.min()
@@ -116,52 +126,37 @@ class ModelGuideHead(nn.Module):
                 reg = entropy_regularization
                 reg_m = marginal_regularization
                 if extraction == "balancedOT":
-                    transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, distance, reg, numItermax = 500)
+                    source_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, source_norm_distance, reg, numItermax = 300)
+                    target_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, target_norm_distance, reg, numItermax = 300)
                 elif extraction == "unbalancedOT":
-                    transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, distance, reg, reg_m)
+                    source_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, source_norm_distance, reg, reg_m)
+                    target_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_distribution, target_distribution, target_norm_distance, reg, reg_m)
                 elif extraction == "partialOT":
-                    transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, distance, reg)
+                    m = mass_transported * torch.minimum(torch.sum(source_distribution), torch.sum(target_distribution))
 
-                torch.set_printoptions(sci_mode=False)
-                
-                # Min-max Norm
-                # eps = 1e-10
-                # matrix_min = transition_matrix.min()
-                # matrix_max = transition_matrix.max()
-                # transition_matrix = (transition_matrix - matrix_min + eps) / (matrix_max - matrix_min + eps)
-                # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
-                # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+                    source_transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, source_norm_distance, reg, m)
+                    target_transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, target_norm_distance, reg, m)
 
-                # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
-                # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
+                transition_source = source_transition_matrix 
+                transition_target = target_transition_matrix
 
-                # Column/Row Sum
-                transition_source = transition_matrix / torch.sum(transition_matrix, 1).unsqueeze(1)
-                transition_target = transition_matrix / torch.sum(transition_matrix, 0).unsqueeze(0)
+                eps = 1e-10
+                matrix_min = transition_source.min()
+                matrix_max = transition_source.max()
+                transition_source = (transition_source - matrix_min + eps) / (matrix_max - matrix_min + eps)
+
+                matrix_min = transition_target.min()
+                matrix_max = transition_target.max()
+                transition_target = (transition_target - matrix_min + eps) / (matrix_max - matrix_min + eps)
 
                 output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_source
                 output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_target
 
-                # No Postprocessing
-                # transition_source = transition_matrix
-                # transition_target = transition_matrix
-                # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
-                # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_matrix
 
-                # transition_source = transition_matrix / (source_distribution.unsqueeze(1))
-                # transition_target = transition_matrix / (target_distribution.unsqueeze(0))
-
-
-                if guide is not None:
-                    #MSE LOSS
-                    # so_loss += torch.nn.MSELoss()(transition_source, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
-                    # so_loss += torch.nn.MSELoss()(transition_target, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
-
-                    # so_loss += torch.nn.MSELoss()(transition_matrix, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
-
-                    #OTHER LOSS FUNCTION
-                    so_loss += self.loss_fnc(transition_source, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
-                    so_loss += self.loss_fnc(transition_target, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+                #if guide is not None:
+                    # so_loss += self.loss_fnc(transition_source, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+                    # so_loss += self.loss_fnc(transition_target, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
+            
                     # so_loss += self.loss_fnc(transition_matrix, guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
 
                     # so_loss_src = torch.sum(torch.sum (transition_source*guide[i, 0, 1:size[0] + 1, 1:size[1] + 1], -1), -1).view(-1)
@@ -173,9 +168,6 @@ class ModelGuideHead(nn.Module):
                     # so_loss = so_loss - torch.sum(loss)
 
                     #so_loss += self.loss_fnc((1 - distance), guide[i, 0, 1:size[0] + 1, 1:size[1] + 1])
-
-
-                    #print(so_loss)
 
 
             if guide is None:
@@ -196,9 +188,11 @@ class ModelGuideHead(nn.Module):
             # so_loss = so_loss_src/len_src + so_loss_tgt/len_tgt
             # so_loss = -torch.mean(so_loss)
 
-            #so_loss = torch.nn.BCELoss()(output, guide)
+            so_loss += self.loss_fnc(output_source, guide)
+            so_loss += self.loss_fnc(output_target, guide)
+
+            #so_loss += self.loss_fnc(torch.minimum(output_source, output_target), guide)
             so_loss = so_loss / query_src.size()[0]
-            # print(so_loss)
 
             return so_loss
 
@@ -256,6 +250,7 @@ class BertForSO(PreTrainedModel):
             extraction='softmax', alignment_threshold=0.1,
             entropy_regularization = 0.1,
             marginal_regularization = 0.5,
+            mass_transported = 1,
             fertility_distribution = 'l2_norm',
             cost_function = 'cosine_sim',
             position_ids1=None,
@@ -294,6 +289,7 @@ class BertForSO(PreTrainedModel):
                                     extraction=extraction, alignment_threshold=alignment_threshold,                                                    entropy_regularization = entropy_regularization,
                                     fertility_distribution = fertility_distribution,
                                     marginal_regularization = marginal_regularization,
+                                    mass_transported = 1,
                                     cost_function = cost_function)
         return sco_loss
 
@@ -303,7 +299,8 @@ class BertForSO(PreTrainedModel):
     def get_aligned_word(self, inputs_src, inputs_tgt, bpe2word_map_src, bpe2word_map_tgt, device, src_len, tgt_len,
                          align_layer=6, extraction='softmax', alignment_threshold=0.1, 
                          entropy_regularization = 0.1,
-                         marginal_regularization = 0.5,                         
+                         marginal_regularization = 0.5,
+                         mass_transported = 1,                         
                          fertility_distribution = 'l2_norm',
                          cost_function = 'cosine_sim',
                          test=False, output_prob=False,
@@ -332,6 +329,7 @@ class BertForSO(PreTrainedModel):
                                                          extraction=extraction, alignment_threshold=alignment_threshold,
                                                          entropy_regularization = entropy_regularization,
                                                          marginal_regularization = marginal_regularization,
+                                                         mass_transported = 1,
                                                          output_prob=output_prob)
                 if output_prob:
                     attention_probs_inter, alignment_probs = attention_probs_inter

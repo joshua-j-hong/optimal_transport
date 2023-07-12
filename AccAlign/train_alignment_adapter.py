@@ -41,7 +41,7 @@ from transformers import AdapterConfig
 logger = logging.getLogger(__name__)
 
 import itertools
-from aligner.sent_aligner import word_align
+from aligner.sent_aligner import word_align, hyperparam_search
 
 
 class LineByLineTextDataset(Dataset):
@@ -204,6 +204,7 @@ def train(args, train_dataset, model, tokenizer) -> Tuple[int, float]:
                                                    extraction=args.extraction, alignment_threshold=args.alignment_threshold,
                                                    entropy_regularization = args.entropy_regularization,
                                                    marginal_regularization = args.marginal_regularization,
+                                                   mass_transported = args.mass_transported, 
                                                    fertility_distribution = args.fertility_distribution,
                                                    cost_function = args.cost_function,
                                                    word_aligns=word_aligns, pairs_len=pairs_len)
@@ -213,6 +214,7 @@ def train(args, train_dataset, model, tokenizer) -> Tuple[int, float]:
                                             alignment_threshold=args.alignment_threshold, 
                                             entropy_regularization = args.entropy_regularization,
                                             marginal_regularization = args.marginal_regularization,
+                                            mass_transported = args.mass_transported, 
                                             fertility_distribution = args.fertility_distribution,
                                             cost_function = args.cost_function,
                                             word_aligns=word_aligns, pairs_len=pairs_len)
@@ -317,6 +319,7 @@ def train(args, train_dataset, model, tokenizer) -> Tuple[int, float]:
                              extraction=args.extraction, alignment_threshold=args.alignment_threshold,
                              entropy_regularization = args.entropy_regularization,
                              marginal_regularization = args.marginal_regularization,
+                             mass_transported = args.mass_transported, 
                              fertility_distribution = args.fertility_distribution,
                              cost_function = args.cost_function,
                              )
@@ -351,12 +354,12 @@ def train(args, train_dataset, model, tokenizer) -> Tuple[int, float]:
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     checkpoint_prefix = "checkpoint"
 
+                    if not args.toggle_adapter:
+                        # Saving adapter
+                        output_dir_adapter = os.path.join(args.output_dir_adapter, "{}-{}".format(checkpoint_prefix, global_step))
 
-
-                    output_dir_adapter = os.path.join(args.output_dir_adapter, "{}-{}".format(checkpoint_prefix, global_step))
-
-                    model.save_adapter(output_dir_adapter, "alignment_adapter")
-                    logger.info("Saving adapters to %s", output_dir_adapter)
+                        model.save_adapter(output_dir_adapter, "alignment_adapter")
+                        logger.info("Saving adapters to %s", output_dir_adapter)
 
             if global_step > t_total:
                 break
@@ -415,6 +418,7 @@ def evaluate(args, model, tokenizer, global_step, prefix="") -> Dict:
                                         alignment_threshold=args.alignment_threshold, 
                                         entropy_regularization = args.entropy_regularization,
                                         marginal_regularization = args.marginal_regularization, 
+                                        mass_transported = args.mass_transported,
                                         fertility_distribution = args.fertility_distribution,
                                         cost_function = args.cost_function,
                                         test=False, word_aligns=word_aligns,pairs_len=pairs_len)
@@ -463,6 +467,7 @@ def evaluate(args, model, tokenizer, global_step, prefix="") -> Dict:
                              align_layer=6, extraction=args.extraction, alignment_threshold=args.alignment_threshold, 
                              entropy_regularization = args.entropy_regularization,
                              marginal_regularization = args.marginal_regularization, 
+                             mass_transported = args.mass_transported,
                              fertility_distribution = args.fertility_distribution, 
                              cost_function = args.cost_function,                           
                              test=True,
@@ -579,15 +584,22 @@ def main():
         "--marginal_regularization", type=float, default=0.5
     )
     parser.add_argument(
+        "--mass_transported", type=float, default=1
+    )
+    parser.add_argument(
         "--fertility_distribution", default='l2_norm', type=str, choices=['l2_norm', 'uniform'], help='l2_norm, uniform'
     )
     parser.add_argument(
         "--cost_function", default='cosine_sim', type=str, choices=['cosine_sim', 'euclidean_distance'], help='cosine_sim, euclidean_distance'
     )
+    parser.add_argument(
+        "--toggle_adapter", action="store_true", help="Turns adapter tuning off for supervised settings"
+    )
 
     parser.add_argument(
         "--should_continue", action="store_true", help="Whether to continue from latest checkpoint in output_dir"
     )
+
     parser.add_argument(
         "--model_name_or_path",
         default=None,
@@ -639,6 +651,7 @@ def main():
     parser.add_argument("--do_train", action="store_true", help="Whether to run training.")
     parser.add_argument("--do_eval", action="store_true", help="Whether to run eval on the dev set.")
     parser.add_argument("--do_test", action="store_true", help="Whether to run infer on the dev set.")
+    parser.add_argument("--do_param_search", action="store_true", help="Whether to run parameter search on the dev set.")
     parser.add_argument("--per_gpu_train_batch_size", default=1, type=int, help="Batch size per GPU/CPU for training.")
     parser.add_argument(
         "--per_gpu_eval_batch_size", default=32, type=int, help="Batch size per GPU/CPU for evaluation."
@@ -774,16 +787,17 @@ def main():
     else:
         args.block_size = min(args.block_size, args.max_len)
 
-
     labse_model = AutoModel.from_pretrained(args.model_name_or_path, output_hidden_states=True)
 
     if args.do_train:
 
-        config_align = HoulsbyConfig(reduction_factor=6)
+        if not args.toggle_adapter:
 
-        labse_model.add_adapter("alignment_adapter", config=config_align)
-        labse_model.train_adapter("alignment_adapter")
-        labse_model.set_active_adapters("alignment_adapter")
+            config_align = HoulsbyConfig(reduction_factor=6)
+
+            labse_model.add_adapter("alignment_adapter", config=config_align)
+            labse_model.train_adapter("alignment_adapter")
+            labse_model.set_active_adapters("alignment_adapter")
 
 
         model = modelforALING(args, config, labse_model)
@@ -810,14 +824,13 @@ def main():
 
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
-
-
-
-
+        if args.toggle_adapter:
+            labse_model.save_pretrained(args.output_dir_adapter) 
+            tokenizer.save_pretrained(args.output_dir_adapter)
 
     if args.do_test:
         # extract word alignment for all layers
-        if args.adapter_path:
+        if args.adapter_path and not args.toggle_adapter:
             labse_model.load_adapter(args.adapter_path)
             labse_model.set_active_adapters('alignment_adapter')
         model = modelforALING(args, config, labse_model)
@@ -829,6 +842,21 @@ def main():
             os.makedirs(folder_path)
         word_align(args, tokenizer, model, folder_path, args.infer_data_file_src,
                    args.infer_data_file_tgt)
+
+    if args.do_param_search:
+        # extract word alignment for all layers
+        if args.adapter_path and not args.toggle_adapter:
+            labse_model.load_adapter(args.adapter_path)
+            labse_model.set_active_adapters('alignment_adapter')
+        model = modelforALING(args, config, labse_model)
+        model.to(args.device)
+        
+        args.reverseRef = False
+        args.allSure = False
+        args.ignorePossible = False
+        args.cleanPunctuation = False
+
+        hyperparam_search(args, tokenizer, model, args.eval_gold_file, args.infer_data_file_src, args.infer_data_file_tgt)
 
 
 
