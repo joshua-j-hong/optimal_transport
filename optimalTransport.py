@@ -265,7 +265,7 @@ def main():
             align = open(f'./data/datasets/kftt-alignments/data/align-{str(num).zfill(3)}.txt', 'r')
             alignments = align.readlines()
             for alignment in alignments:
-                train_talp.write([alignment.split])
+                train_talp.write(alignment)
 
             en.close()
             ja.close()

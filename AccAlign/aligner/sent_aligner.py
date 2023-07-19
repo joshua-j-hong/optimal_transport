@@ -204,7 +204,7 @@ def hyperparam_search(args, tokenizer, model, gold_labels, src_path, tgt_path):
         best_threshold, best_layer, best_marginal = None, None, None
         best_Fscore = 0 
 
-        regularize_progress = tqdm(range(0,102,1), desc="Marginal Regularization Value")
+        regularize_progress = tqdm(range(0,102,2), desc="Marginal Regularization Value")
 
         for reg_m in regularize_progress:
             regularize_progress.set_description(f"Marginal Regularization Value: {reg_m / 100.0}")
@@ -249,7 +249,7 @@ def hyperparam_search(args, tokenizer, model, gold_labels, src_path, tgt_path):
         best_threshold, best_layer, best_mass = None, None, None
         best_Fscore = 0
         #Test
-        mass_transported = tqdm(range(99,0,-1), desc="Mass to be transported")
+        mass_transported = tqdm(range(99,50,-1), desc="Mass to be transported")
 
         for mass in mass_transported:
             mass_transported.set_description(f"Mass to be transported: {mass / 100.0}")

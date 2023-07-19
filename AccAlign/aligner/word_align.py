@@ -53,6 +53,9 @@ class SentenceAligner_word(object):
 
     def get_subword_matrix(self, args, inputs_src, inputs_tgt, PAD_ID, CLS_ID, SEP_ID, output_prob=False):
 
+        inputs_src = inputs_src.to(args.device)
+        inputs_tgt = inputs_tgt.to(args.device)
+
         output_src,output_tgt = self.embed_loader(
             inputs_src=inputs_src, inputs_tgt=inputs_tgt, attention_mask_src=(inputs_src != PAD_ID),
             attention_mask_tgt=(inputs_tgt != PAD_ID), guide=None, align_layer=args.align_layer,
@@ -112,6 +115,9 @@ class SentenceAligner_word(object):
                         # cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
 
                         distance = 1 - cosine_similarity
+                        # source_norm_distance = distance
+                        # target_norm_distance = distance
+
                         # Row/Column normalize
                         source_min = distance.min(1)[0].unsqueeze(1)
                         target_min = distance.min(0)[0].unsqueeze(0)
@@ -142,9 +148,9 @@ class SentenceAligner_word(object):
                     # Create initial distributions
 
                     if args.fertility_distribution == "uniform":
-                        source_distribution = torch.full((size[0],1), 1.0 / size[0]).squeeze(1)
+                        source_distribution = torch.full((size[0],1), 1.0 / size[0]).squeeze(1).to(args.device)
                         source_norms = source_distribution
-                        target_distribution = torch.full((size[1],1), 1.0 / size[1]).squeeze(1)
+                        target_distribution = torch.full((size[1],1), 1.0 / size[1]).squeeze(1).to(args.device)
                         target_norms = target_distribution
                     elif args.fertility_distribution == "l2_norm":
                         source_norms = torch.linalg.norm(nomask_source, dim=1)
@@ -161,14 +167,22 @@ class SentenceAligner_word(object):
                         source_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, source_norm_distance, reg, numItermax = 300)
                         target_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, target_norm_distance, reg, numItermax = 300)
                     elif args.extraction == "unbalancedOT":
+                        # source_min = source_norms.min()
+                        # source_max = source_norms.max()
+                        # source_norms = (source_norms - source_min + eps) / (source_max - source_min + eps)
+
+                        # target_min = target_norms.min()
+                        # target_max = target_norms.max()
+                        # target_norms = (target_norms - target_min + eps) / (target_max - target_min + eps)
+
                         source_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_norms, target_norms, source_norm_distance, reg, reg_m)
                         target_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_norms, target_norms, target_norm_distance, reg, reg_m)
 
                     elif args.extraction == "partialOT":
-                        m = mass_transported * torch.minimum(torch.sum(source_distribution), torch.sum(target_distribution))
+                        m = mass_transported * torch.minimum(torch.sum(source_norms), torch.sum(target_norms))
 
-                        source_transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, source_norm_distance, reg, m)
-                        target_transition_matrix = ot.partial.entropic_partial_wasserstein(source_distribution, target_distribution, target_norm_distance, reg, m)
+                        source_transition_matrix = ot.partial.entropic_partial_wasserstein(source_norms, target_norms, source_norm_distance, reg, m)
+                        target_transition_matrix = ot.partial.entropic_partial_wasserstein(source_norms, target_norms, target_norm_distance, reg, m)
 
                     transition_source = source_transition_matrix
                     transition_target = target_transition_matrix
@@ -187,6 +201,8 @@ class SentenceAligner_word(object):
 
                     output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_source
                     output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_target
+                    # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = torch.max(transition_source, transition_target)
+                    # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = torch.max(transition_source, transition_target)
 
                 if self.guide is None:
                     align_matrix = (output_source > args.alignment_threshold) * (output_target > args.alignment_threshold)

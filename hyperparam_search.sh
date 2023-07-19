@@ -15,7 +15,7 @@ datadir=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/
 EVAL_GOLD_FILE=$datadir/dev.talp
 
 EXTRACTION=unbalancedOT
-FERTILITY_DISTRIBUTION=l2_norm
+FERTILITY_DISTRIBUTION=uniform
 COST_FUNCTION=cosine_sim
 
 SRC=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/$SOURCE

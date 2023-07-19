@@ -29,6 +29,95 @@ def parse_args():
 
     return parser.parse_args()
 
+def calculate_precision_recall_f1(true_positive, false_negative, false_positive, f_alpha):
+    if true_positive +  false_positive > 0:
+        precision = true_positive / (true_positive +  false_positive)
+    else:
+        precision = 0
+    if true_positive +  false_negative > 0:
+        recall = true_positive / (true_positive +  false_negative)
+    else:
+        recall = 0
+
+    if f_alpha < 0.0:
+        f_measure = 0.0
+    elif precision == 0 or recall == 0:
+        f_measure = 0
+    else:
+        f_divident = f_alpha / precision
+        f_divident += (1.0 - f_alpha) / recall
+        f_measure = 1.0 / f_divident
+    
+    return precision, recall, f_measure
+
+
+def calculate_null_alignments(gold_labels, predicted, source, target):
+    """ Count the number of words with no alignments and how many are captured by the predicted alignments
+    """
+    gold_source = set(x[0] for x in gold_labels)
+    gold_target = set(x[1] for x in gold_labels)
+    predicted_source = set(x[0] for x in predicted)
+    predicted_target = set(x[1] for x in predicted)
+
+    gold_null_source_indices = set(range(len(source))) - gold_source
+    gold_null_target_indices = set(range(len(target))) - gold_target
+
+    pred_null_source_indices = set(range(len(source))) - predicted_source
+    pred_null_target_indices = set(range(len(target))) - predicted_target
+
+    true_positive = len(gold_null_source_indices & pred_null_source_indices) + len(gold_null_target_indices & pred_null_target_indices)
+    false_negative = len(gold_null_source_indices - pred_null_source_indices) + len(gold_null_target_indices - pred_null_target_indices)
+    false_positive = len(pred_null_source_indices - gold_null_source_indices) + len(pred_null_target_indices - gold_null_target_indices)
+
+    return true_positive, false_negative, false_positive
+
+def calculate_one_to_one_alignments(gold_labels, predicted, source, target):
+    """ Count the number of words with exactly one alignment and how many are captured by the predicted alignments
+    """
+
+    gold_source_counts = dict(Counter(x[0] for x in gold_labels))
+    gold_source_target = dict(Counter(x[1] for x in gold_labels))
+    gold_one2one_indices = set()
+    for source, target in gold_labels:
+        if gold_source_counts[source] == 1 and gold_source_target[target] == 1:
+            gold_one2one_indices.add((source, target))
+
+    predicted_source_counts = dict(Counter(x[0] for x in predicted))
+    predicted_source_target = dict(Counter(x[1] for x in predicted))
+    predicted_one2one_indices = set()
+    for source, target in predicted:
+        if predicted_source_counts[source] == 1 and predicted_source_target[target] == 1:
+            predicted_one2one_indices.add((source, target))
+
+    true_positive = len(gold_one2one_indices & predicted_one2one_indices)
+    false_negative = len(gold_one2one_indices - predicted_one2one_indices)
+    false_positive = len(predicted_one2one_indices - gold_one2one_indices)
+
+    return true_positive, false_negative, false_positive
+
+def calculate_many_to_one_alignments(gold_labels, predicted, source, target):
+    """ Count the number of words with exactly one alignment and how many are captured by the predicted alignments
+    """
+
+    gold_source_counts = dict(Counter(x[0] for x in gold_labels))
+    gold_source_target = dict(Counter(x[1] for x in gold_labels))
+    gold_many2one_indices = set()
+    for source, target in gold_labels:
+        if gold_source_counts[source] > 1 or gold_source_target[target] > 1:
+            gold_many2one_indices.add((source, target))
+
+    predicted_source_counts = dict(Counter(x[0] for x in predicted))
+    predicted_source_target = dict(Counter(x[1] for x in predicted))
+    predicted_many2one_indices = set()
+    for source, target in predicted:
+        if predicted_source_counts[source] > 1 or predicted_source_target[target] > 1:
+            predicted_many2one_indices.add((source, target))
+
+    true_positive = len(gold_many2one_indices & predicted_many2one_indices)
+    false_negative = len(gold_many2one_indices - predicted_many2one_indices)
+    false_positive = len(predicted_many2one_indices - gold_many2one_indices)
+
+    return true_positive, false_negative, false_positive
 
 def calculate_internal_jumps(alignments):
     """ Count number of times the set of source word indices aligned to a target word index are not adjacent
@@ -101,6 +190,10 @@ def calculate_metrics(array_sure, array_possible, array_hypothesis, f_alpha, sou
     sum_a_intersect_p, sum_a_intersect_s, sum_s, sum_a, aligned_source_words, aligned_target_words = 6 * [0.0]
     sum_source_words, sum_target_words = map(lambda s: max(1.0, sum(len(x) for x in s)), [source_sentences, target_sentences])
     internal_jumps, external_jumps = 0, 0
+    null_true_positive, null_false_positive, null_false_negative = 0, 0, 0
+    one2one_true_positive, one2one_false_positive, one2one_false_negative = 0, 0, 0
+    many2one_true_positive, many2one_false_positive, many2one_false_negative = 0, 0, 0
+
 
     for S, P, A, source, target in itertools.zip_longest(array_sure, array_possible, array_hypothesis, source_sentences, target_sentences):
         if clean_punctuation:
@@ -123,6 +216,21 @@ def calculate_metrics(array_sure, array_possible, array_hypothesis, f_alpha, sou
                     print(target, len(target), tgt_pos)
                 if (src_pos, tgt_pos) not in P:
                     errors[source[src_pos], target[tgt_pos]] += 1
+            true_positive, false_negative, false_positive = calculate_null_alignments(S, A, source, target)
+            null_true_positive += true_positive
+            null_false_positive += false_positive
+            null_false_negative += false_negative
+
+            true_positive, false_negative, false_positive = calculate_one_to_one_alignments(S, A, source, target)
+            one2one_true_positive += true_positive
+            one2one_false_positive += false_positive
+            one2one_false_negative += false_negative
+
+            true_positive, false_negative, false_positive = calculate_many_to_one_alignments(S, A, source, target)
+            many2one_true_positive += true_positive
+            many2one_false_positive += false_positive
+            many2one_false_negative += false_negative
+            
     if sum_a > 0:
         precision = sum_a_intersect_p / sum_a
     else:
@@ -148,8 +256,11 @@ def calculate_metrics(array_sure, array_possible, array_hypothesis, f_alpha, sou
     source_coverage = aligned_source_words / sum_source_words
     target_coverage = aligned_target_words / sum_target_words
 
-    return precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps
+    null_precision, null_recall, null_f1 = calculate_precision_recall_f1(null_true_positive, null_false_negative, null_false_positive, f_alpha)
+    one2one_precision, one2one_recall, one2one_f1 = calculate_precision_recall_f1(one2one_true_positive, one2one_false_negative, one2one_false_positive, f_alpha)
+    many2one_precision, many2one_recall, many2one_f1 = calculate_precision_recall_f1(many2one_true_positive, many2one_false_negative, many2one_false_positive, f_alpha)
 
+    return precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps, null_precision, null_recall, null_f1, one2one_precision, one2one_recall, one2one_f1, many2one_precision, many2one_recall, many2one_f1
 
 def parse_single_alignment(string, reverse=False, one_indexed=False):
     assert ('-' in string or 'p' in string) and 'Bad Alignment separator'
@@ -209,7 +320,7 @@ if __name__ == "__main__":
                 alignment_tuple = parse_single_alignment(alignment_string, args.reverseHyp, args.oneHyp)
                 hypothesis[-1].add(alignment_tuple)
 
-    precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps = calculate_metrics(sure, possible, hypothesis, args.fAlpha, source, target, args.cleanPunctuation)
+    precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps, null_precision, null_recall, null_f1, one2one_precision, one2one_recall, one2one_f1, many2one_precision, many2one_recall, many2one_f1 = calculate_metrics(sure, possible, hypothesis, args.fAlpha, source, target, args.cleanPunctuation)
     print("{0}: {1:.1f}% ({2:.1f}%/{3:.1f}%/{4})".format(args.hypothesis,
                 aer * 100.0, precision * 100.0, recall * 100.0, sum([len(x) for x in hypothesis])))
     #print("=======aer========",aer * 100.0)
@@ -221,3 +332,6 @@ if __name__ == "__main__":
         print(errors.most_common(args.most_common_errors))
         print("Internal Jumps: {}, External Jumps: {}".format(internal_jumps, external_jumps))
         print("Source Coverage: {:.1f}%, Target Coverage: {:.1f}%".format(source_coverage * 100.0, target_coverage * 100.0))
+        print("Null Alignment Statistics: Precision: {:.4f}, Recall: {:.4f}, F1: {:.4f}".format(null_precision, null_recall, null_f1))
+        print("One-to-One Alignment Statistics: Precision: {:.4f}, Recall: {:.4f}, F1: {:.4f}".format(one2one_precision, one2one_recall, one2one_f1))
+        print("Many-to-One Alignment Statistics: Precision: {:.4f}, Recall: {:.4f}, F1: {:.4f}".format(many2one_precision, many2one_recall, many2one_f1))
