@@ -195,9 +195,6 @@ def hyperparam_search(args, tokenizer, model, gold_labels, src_path, tgt_path):
                         possible[-1].add(alignment_tuple)
 
     source, target = map(read_text, [src_path, tgt_path])
-
-    args.entropy_regularization = 0.1
-
     # Param search
 
     if args.extraction == "unbalancedOT":
@@ -236,7 +233,7 @@ def hyperparam_search(args, tokenizer, model, gold_labels, src_path, tgt_path):
                                 word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] = word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] + word_alignments[layer_id]
 
             for layer_id, threshold in word_aligns_list_all_layer_dic:
-                    precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps = calculate_metrics(sure, possible,  word_aligns_list_all_layer_dic[(layer_id, threshold)], 0.5, source, target, args.cleanPunctuation)
+                    precision, recall, aer, f_measure, *_ = calculate_metrics(sure, possible,  word_aligns_list_all_layer_dic[(layer_id, threshold)], 0.5, source, target, args.cleanPunctuation)
                     if f_measure > best_Fscore:
                         best_Fscore = f_measure
                         best_threshold, best_layer, best_marginal = threshold, layer_id, args.marginal_regularization
@@ -281,7 +278,7 @@ def hyperparam_search(args, tokenizer, model, gold_labels, src_path, tgt_path):
                                 word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] = word_aligns_list_all_layer_dic[(layer_id, (threshold / 100.0))] + word_alignments[layer_id]
 
             for layer_id, threshold in word_aligns_list_all_layer_dic:
-                    precision, recall, aer, f_measure, errors, source_coverage, target_coverage, internal_jumps, external_jumps = calculate_metrics(sure, possible,  word_aligns_list_all_layer_dic[(layer_id, threshold)], 0.5, source, target, args.cleanPunctuation)
+                    precision, recall, aer, f_measure, *_  = calculate_metrics(sure, possible,  word_aligns_list_all_layer_dic[(layer_id, threshold)], 0.5, source, target, args.cleanPunctuation)
                     if f_measure > best_Fscore:
                         best_Fscore = f_measure
                         best_threshold, best_layer, best_mass = threshold, layer_id, args.mass_transported

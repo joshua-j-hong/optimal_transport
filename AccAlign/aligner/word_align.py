@@ -109,21 +109,23 @@ class SentenceAligner_word(object):
                     eps = 1e-10
                     if args.cost_function == "cosine_sim":
                         cosine_similarity = (torch.matmul(torch.nn.functional.normalize(nomask_source), torch.nn.functional.normalize(nomask_target).t()) + 1.0) / 2
+
+                        similarity = cosine_similarity
+
                         # Matrix normalize
-                        # cosine_min = cosine_similarity.min()
-                        # cosine_max = cosine_similarity.max()
-                        # cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
+                        cosine_min = cosine_similarity.min()
+                        cosine_max = cosine_similarity.max()
+                        cosine_similarity = (cosine_similarity - cosine_min + eps) / (cosine_max - cosine_min + eps)
 
                         distance = 1 - cosine_similarity
-                        # source_norm_distance = distance
-                        # target_norm_distance = distance
+                        source_norm_distance = distance
+                        target_norm_distance = distance
 
                         # Row/Column normalize
                         source_min = distance.min(1)[0].unsqueeze(1)
                         target_min = distance.min(0)[0].unsqueeze(0)
                         source_norm_distance = (distance - source_min + eps) / (distance.max(1)[0].unsqueeze(1) - source_min + eps)
                         target_norm_distance = (distance - target_min + eps) / (distance.max(0)[0].unsqueeze(0) - target_min + eps)
-
                         distance = source_norm_distance
 
                     elif args.cost_function == "euclidean_distance":
@@ -159,6 +161,16 @@ class SentenceAligner_word(object):
                         target_norms = torch.linalg.norm(nomask_target, dim=1)
                         target_distribution = target_norms /  torch.sum(target_norms)
 
+                        # source_norms = (cosine_similarity).sum(dim = -1)
+                        # source_norms = source_norms - source_norms.min() + 1
+                        # target_norms = (cosine_similarity).sum(dim = -2)
+                        # target_norms = target_norms - target_norms.min() + 1
+
+                        # torch.set_printoptions(sci_mode=False)
+                        # print(cosine_similarity)
+                        # print(source_norms)
+                        # print(target_norms)
+
                     reg = args.entropy_regularization
                     reg_m = args.marginal_regularization
                     mass_transported = args.mass_transported
@@ -167,17 +179,8 @@ class SentenceAligner_word(object):
                         source_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, source_norm_distance, reg, numItermax = 300)
                         target_transition_matrix = ot.bregman.sinkhorn_log(source_distribution, target_distribution, target_norm_distance, reg, numItermax = 300)
                     elif args.extraction == "unbalancedOT":
-                        # source_min = source_norms.min()
-                        # source_max = source_norms.max()
-                        # source_norms = (source_norms - source_min + eps) / (source_max - source_min + eps)
-
-                        # target_min = target_norms.min()
-                        # target_max = target_norms.max()
-                        # target_norms = (target_norms - target_min + eps) / (target_max - target_min + eps)
-
                         source_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_norms, target_norms, source_norm_distance, reg, reg_m)
                         target_transition_matrix = ot.unbalanced.sinkhorn_unbalanced(source_norms, target_norms, target_norm_distance, reg, reg_m)
-
                     elif args.extraction == "partialOT":
                         m = mass_transported * torch.minimum(torch.sum(source_norms), torch.sum(target_norms))
 
@@ -189,7 +192,7 @@ class SentenceAligner_word(object):
 
                     # transition_source = torch.div(source_transition_matrix, source_norms.unsqueeze(1))
                     # transition_target = torch.div(target_transition_matrix, target_norms.unsqueeze(0))
-
+                    
                     eps = 1e-10
                     matrix_min = transition_source.min()
                     matrix_max = transition_source.max()
@@ -201,8 +204,11 @@ class SentenceAligner_word(object):
 
                     output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_source
                     output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = transition_target
-                    # output_source[i, 0, 1:size[0] + 1, 1:size[1] + 1] = torch.max(transition_source, transition_target)
-                    # output_target[i, 0, 1:size[0] + 1, 1:size[1] + 1] = torch.max(transition_source, transition_target)
+
+                    # if layer_id == 8 and i == 0:
+                    #     torch.set_printoptions(sci_mode=False)
+                    #     for tensor in torch.minimum(transition_source, transition_target):
+                    #         print(tensor)
 
                 if self.guide is None:
                     align_matrix = (output_source > args.alignment_threshold) * (output_target > args.alignment_threshold)

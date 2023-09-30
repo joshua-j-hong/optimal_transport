@@ -9,14 +9,14 @@ DATASET=ALIGN6/dev_data
 SOURCE=dev.src
 TARGET=dev.tgt
 
-# DATASET=ZhEn
-# SOURCE=zh
-# TARGET=en
+DATASET=ZhEn
+SOURCE=zh
+TARGET=en
 
-EXTRACTION=softmax
-ALIGNMENT_THRESHOLD=0.1
+EXTRACTION=unbalancedOT
+ALIGNMENT_THRESHOLD=0.34
 ENTROPY_REGULARIZATION=0.1
-MARGINAL_REGULARIZATION=0.08
+MARGINAL_REGULARIZATION=0.14
 MASS_TRANSPORTED=1
 FERTILITY_DISTRIBUTION=l2_norm
 COST_FUNCTION=cosine_sim
@@ -74,14 +74,14 @@ python $WorkLOC/AccAlign/train_alignment_adapter.py \
 
 datadir=$WorkLOC/data/pre_processed_data/accAlign/$DATASET/
 ref_align=$datadir/alignment$DATASET.talp
-ref_align=$datadir/dev.talp
+#ref_align=$datadir/dev.talp
 reftype='--oneRef'
 
 
 for LayerNum in `seq 1 12`; do
     echo "=====AER shifted for layer=${LayerNum}..."
-    #python $WorkLOC/AccAlign/aer.py ${ref_align} $WorkLOC/AccAlign/infer_output/XX2XX.align.$LayerNum --fAlpha 0.5 $reftype
-    python $WorkLOC/AccAlign/aer.py ${ref_align} $WorkLOC/AccAlign/infer_output/XX2XX.align.$LayerNum --fAlpha 0.5 $reftype --most_common_errors 5 --source $SRC --target $TGT
+    python $WorkLOC/AccAlign/aer.py ${ref_align} $WorkLOC/AccAlign/infer_output/XX2XX.align.$LayerNum --fAlpha 0.5 $reftype
+    #python $WorkLOC/AccAlign/aer.py ${ref_align} $WorkLOC/AccAlign/infer_output/XX2XX.align.$LayerNum --fAlpha 0.5 $reftype --most_common_errors 5 --source $SRC --target $TGT
 done
 
 exit

@@ -50,7 +50,6 @@ def calculate_precision_recall_f1(true_positive, false_negative, false_positive,
     
     return precision, recall, f_measure
 
-
 def calculate_null_alignments(gold_labels, predicted, source, target):
     """ Count the number of words with no alignments and how many are captured by the predicted alignments
     """
@@ -103,14 +102,14 @@ def calculate_many_to_one_alignments(gold_labels, predicted, source, target):
     gold_source_target = dict(Counter(x[1] for x in gold_labels))
     gold_many2one_indices = set()
     for source, target in gold_labels:
-        if gold_source_counts[source] > 1 or gold_source_target[target] > 1:
+        if ((gold_source_counts[source] > 1 or gold_source_target[target] > 1)):
             gold_many2one_indices.add((source, target))
 
     predicted_source_counts = dict(Counter(x[0] for x in predicted))
     predicted_source_target = dict(Counter(x[1] for x in predicted))
     predicted_many2one_indices = set()
     for source, target in predicted:
-        if predicted_source_counts[source] > 1 or predicted_source_target[target] > 1:
+        if (predicted_source_counts[source] > 1 or predicted_source_target[target] > 1):
             predicted_many2one_indices.add((source, target))
 
     true_positive = len(gold_many2one_indices & predicted_many2one_indices)
@@ -137,7 +136,6 @@ def calculate_internal_jumps(alignments):
             return elements_in_contiguous_set == len(s)
 
     return [contiguous(s) for s in alignments].count(False)
-
 
 def calculate_external_jumps(alignments):
     """ Count number of times the (smallest) source index aligned to target word x is not adjacent or identical to any source word index aligned to the next target word index x+1
