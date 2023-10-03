@@ -1,6 +1,6 @@
 # Optimal Transport for Multilingual Word Alignment
 
-This is the github repository for research into using optimal transport for multilingual word alignment.
+This is the github repository for research into using optimal transport for multilingual word alignment. This research was conducted by Joshua Hong under the mentorship of Yuki Arase at Osaka University
 
 ## General Information
 
